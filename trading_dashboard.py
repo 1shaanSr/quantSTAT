@@ -14,6 +14,35 @@ import warnings
 warnings.filterwarnings('ignore')
 
 class TradingDashboard:
+    def execute_trade(self):
+        print("\n=== Manual Trade Execution ===")
+        print("You can BUY (go long) or SELL (short). 'SELL' will open a short position if allowed by your account.")
+        try:
+            symbol = input("Enter symbol to trade: ").strip().upper()
+            qty = input("Enter quantity: ").strip()
+            side = input("Enter side (buy/sell): ").strip().lower()
+            if not symbol or not qty or side not in ("buy", "sell"):
+                print("Invalid input. Trade cancelled.")
+                return
+            try:
+                qty = int(qty)
+            except ValueError:
+                print("Quantity must be an integer.")
+                return
+            confirm = input(f"Confirm {side.upper()} {qty} shares of {symbol}? (y/n): ").strip().lower()
+            if confirm != 'y':
+                print("Trade cancelled.")
+                return
+            order = self.api.submit_order(
+                symbol=symbol,
+                qty=qty,
+                side=side,
+                type="market",
+                time_in_force="gtc"
+            )
+            print(f"Order submitted! ID: {order.id}")
+        except Exception as e:
+            print(f"Trade error: {e}")
     def fetch_positions(self):
         """Fetch current positions with enhanced data"""
         try:
@@ -433,9 +462,13 @@ class TradingDashboard:
         """Run basic backtest of strategy on historical data"""
         symbol = symbol or self.strategy_symbol
         print(f"\n=== Backtesting {symbol} for {days} days ===")
-        df = yf.download(symbol, period=f'{days}d', interval='5m', progress=False, auto_adjust=False)
-        if df.empty:
-            print("No data for backtest.")
+        try:
+            df = yf.download(symbol, period=f'{days}d', interval='5m', progress=False, auto_adjust=False)
+        except Exception as e:
+            print(f"Error fetching data for backtest: {e}")
+            return
+        if df is None or df.empty:
+            print("No data for backtest. Market may be closed or symbol is invalid.")
             return
         df = self.calculate_indicators(df)
         position = None
@@ -448,19 +481,18 @@ class TradingDashboard:
         atr = 0
         trades = []
         for i in range(15, len(df)):
-            row = df.iloc[i]
-            prev_row = df.iloc[i-1]
-            price = row['Close']
-            atr = row['ATR']
-            vwap = row['VWAP']
-            rsi = row['RSI']
-            prev_rsi = prev_row['RSI']
+            # Always use .iloc for scalar access to avoid Series ambiguity
+            price = float(df['Close'].iloc[i])
+            atr = float(df['ATR'].iloc[i]) if not pd.isna(df['ATR'].iloc[i]) else 0
+            vwap = float(df['VWAP'].iloc[i]) if not pd.isna(df['VWAP'].iloc[i]) else 0
+            rsi = float(df['RSI'].iloc[i]) if not pd.isna(df['RSI'].iloc[i]) else 0
+            prev_rsi = float(df['RSI'].iloc[i-1]) if not pd.isna(df['RSI'].iloc[i-1]) else 0
             if not position:
-                # Entry signals
+                # Entry signals: Buy or Short
                 if prev_rsi < 30 and rsi >= 30 and price < vwap:
                     side = 'buy'
                 elif prev_rsi > 70 and rsi <= 70 and price > vwap:
-                    side = 'sell'
+                    side = 'sell'  # Shorting allowed
                 else:
                     continue
                 risk_amt = equity * risk_pct
@@ -473,25 +505,28 @@ class TradingDashboard:
                 position = {'side': side, 'qty': qty, 'entry': entry, 'stop': stop, 'target': target, 'open_idx': i}
             else:
                 # Exit logic
-                if side == 'buy':
-                    if price <= stop:
-                        pnl = (price - entry) * qty
-                        trades.append({'entry': entry, 'exit': price, 'side': side, 'pnl': pnl, 'reason': 'stop'})
+                if position['side'] == 'buy':
+                    if price <= position['stop']:
+                        pnl = (price - position['entry']) * position['qty']
+                        trades.append({'entry': position['entry'], 'exit': price, 'side': 'buy', 'pnl': pnl, 'reason': 'stop'})
                         position = None
-                    elif price >= target:
-                        pnl = (price - entry) * qty
-                        trades.append({'entry': entry, 'exit': price, 'side': side, 'pnl': pnl, 'reason': 'target'})
+                    elif price >= position['target']:
+                        pnl = (price - position['entry']) * position['qty']
+                        trades.append({'entry': position['entry'], 'exit': price, 'side': 'buy', 'pnl': pnl, 'reason': 'target'})
                         position = None
-                elif side == 'sell':
-                    if price >= stop:
-                        pnl = (entry - price) * qty
-                        trades.append({'entry': entry, 'exit': price, 'side': side, 'pnl': pnl, 'reason': 'stop'})
+                elif position['side'] == 'sell':
+                    if price >= position['stop']:
+                        pnl = (position['entry'] - price) * position['qty']
+                        trades.append({'entry': position['entry'], 'exit': price, 'side': 'sell', 'pnl': pnl, 'reason': 'stop'})
                         position = None
-                    elif price <= target:
-                        pnl = (entry - price) * qty
-                        trades.append({'entry': entry, 'exit': price, 'side': side, 'pnl': pnl, 'reason': 'target'})
+                    elif price <= position['target']:
+                        pnl = (position['entry'] - price) * position['qty']
+                        trades.append({'entry': position['entry'], 'exit': price, 'side': 'sell', 'pnl': pnl, 'reason': 'target'})
                         position = None
         # Results
+        if not trades:
+            print("No trades were made during the backtest period. This may be due to market conditions or lack of data.")
+            return
         total_pnl = sum(t['pnl'] for t in trades)
         print(f"Backtest completed: {len(trades)} trades | Total P&L: ${total_pnl:.2f}")
         for t in trades:
