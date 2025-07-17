@@ -16,137 +16,142 @@ warnings.filterwarnings('ignore')
 class TradingDashboard:
     def execute_trade(self):
         print("\n=== Manual Trade Execution ===")
-        print("Select trade type:")
-        print("1. Buy (go long)")
-        print("2. Sell (close owned shares)")
-        print("3. Short (sell to open)")
-        print("4. Exit")
-        trade_type = input("Enter choice (1-4): ").strip()
-        if trade_type not in ("1", "2", "3"):
-            print("Trade cancelled.")
-            return
-        symbol = input("Enter symbol to trade: ").strip().upper()
-        if not symbol:
-            print("Invalid input. Trade cancelled.")
-            return
-        # Option 1: Buy (go long)
-        if trade_type == "1":
-            qty = input("Enter quantity to BUY: ").strip()
-            if not qty:
+        while True:
+            print("\nSelect trade type:")
+            print("1. Buy (go long)")
+            print("2. Sell (close owned shares)")
+            print("3. Short (sell to open)")
+            print("4. Exit short (buy to cover)")
+            print("5. Exit to main menu")
+            trade_type = input("Enter choice (1-5): ").strip()
+            if trade_type == "5":
+                print("Returning to main menu.")
+                return
+            symbol = input("Enter symbol to trade: ").strip().upper()
+            if not symbol:
                 print("Invalid input. Trade cancelled.")
-                return
-            try:
-                qty = int(qty)
-            except ValueError:
-                print("Quantity must be an integer.")
-                return
-            confirm = input(f"Confirm BUY (long) {qty} shares of {symbol}? (y/n): ").strip().lower()
-            if confirm != 'y':
-                print("Trade cancelled.")
-                return
-            try:
-                order = self.api.submit_order(
-                    symbol=symbol,
-                    qty=qty,
-                    side="buy",
-                    type="market",
-                    time_in_force="gtc"
-                )
-                print(f"Order submitted! ID: {order.id}")
-            except Exception as e:
-                print(f"Trade error: {e}")
-            return
-        # Option 2: Sell (close owned shares)
-        elif trade_type == "2":
-            try:
-                positions = self.api.list_positions()
-                owned = next((p for p in positions if p.symbol.upper() == symbol and p.side == 'long'), None)
-                if not owned:
-                    print(f"No owned (long) shares of {symbol} to sell.")
-                    return
-                max_qty = int(float(owned.qty))
-                print(f"You own {max_qty} shares of {symbol}.")
-                qty = input(f"Enter quantity to SELL (max {max_qty}): ").strip()
+                continue
+
+            if trade_type == "1":
+                qty = input("Enter quantity to BUY: ").strip()
+                if not qty:
+                    print("Invalid input. Trade cancelled.")
+                    continue
                 try:
                     qty = int(qty)
                 except ValueError:
                     print("Quantity must be an integer.")
-                    return
-                if qty < 1 or qty > max_qty:
-                    print("Invalid quantity.")
-                    return
-                confirm = input(f"Confirm SELL (close) {qty} shares of {symbol}? (y/n): ").strip().lower()
+                    continue
+                confirm = input(f"Confirm BUY (long) {qty} shares of {symbol}? (y/n): ").strip().lower()
                 if confirm != 'y':
                     print("Trade cancelled.")
-                    return
-                order = self.api.submit_order(
-                    symbol=symbol,
-                    qty=qty,
-                    side="sell",
-                    type="market",
-                    time_in_force="gtc"
-                )
-                print(f"Order submitted! ID: {order.id}")
-            except Exception as e:
-                print(f"Trade error: {e}")
-            return
-        # Option 3: Short (sell to open) or exit short (buy to cover)
-        elif trade_type == "3":
-            try:
-                positions = self.api.list_positions()
-                short_pos = next((p for p in positions if p.symbol.upper() == symbol and p.side == 'short'), None)
-                if short_pos:
-                    max_qty = int(float(short_pos.qty))
-                    print(f"You have an open SHORT of {max_qty} shares of {symbol}.")
-                    close_short = input(f"Do you want to BUY TO COVER (exit short) these shares? (y/n): ").strip().lower()
-                    if close_short == 'y':
-                        qty = input(f"Enter quantity to BUY TO COVER (max {max_qty}): ").strip()
-                        try:
-                            qty = int(qty)
-                        except ValueError:
-                            print("Quantity must be an integer.")
-                            return
-                        if qty < 1 or qty > max_qty:
-                            print("Invalid quantity.")
-                            return
-                        confirm = input(f"Confirm BUY TO COVER {qty} shares of {symbol}? (y/n): ").strip().lower()
-                        if confirm != 'y':
-                            print("Trade cancelled.")
-                            return
-                        order = self.api.submit_order(
-                            symbol=symbol,
-                            qty=qty,
-                            side="buy",
-                            type="market",
-                            time_in_force="gtc"
-                        )
-                        print(f"Order submitted! ID: {order.id}")
-                        return
-                # If no open short, allow to open new short
+                    continue
+                try:
+                    order = self.api.submit_order(
+                        symbol=symbol,
+                        qty=qty,
+                        side="buy",
+                        type="market",
+                        time_in_force="gtc"
+                    )
+                    print(f"Order submitted! ID: {order.id}")
+                except Exception as e:
+                    print(f"Trade error: {e}")
+
+            elif trade_type == "2":
+                try:
+                    positions = self.api.list_positions()
+                    owned = next((p for p in positions if p.symbol.upper() == symbol and p.side == 'long'), None)
+                    if not owned:
+                        print(f"No owned (long) shares of {symbol} to sell.")
+                        continue
+                    max_qty = int(float(owned.qty))
+                    print(f"You own {max_qty} shares of {symbol}.")
+                    qty = input(f"Enter quantity to SELL (max {max_qty}): ").strip()
+                    try:
+                        qty = int(qty)
+                    except ValueError:
+                        print("Quantity must be an integer.")
+                        continue
+                    if qty < 1 or qty > max_qty:
+                        print("Invalid quantity.")
+                        continue
+                    confirm = input(f"Confirm SELL (close) {qty} shares of {symbol}? (y/n): ").strip().lower()
+                    if confirm != 'y':
+                        print("Trade cancelled.")
+                        continue
+                    order = self.api.submit_order(
+                        symbol=symbol,
+                        qty=qty,
+                        side="sell",
+                        type="market",
+                        time_in_force="gtc"
+                    )
+                    print(f"Order submitted! ID: {order.id}")
+                except Exception as e:
+                    print(f"Trade error: {e}")
+
+            elif trade_type == "3":
                 qty = input("Enter quantity to SHORT (sell to open): ").strip()
                 if not qty:
                     print("Invalid input. Trade cancelled.")
-                    return
+                    continue
                 try:
                     qty = int(qty)
                 except ValueError:
                     print("Quantity must be an integer.")
-                    return
+                    continue
                 confirm = input(f"Confirm SHORT (sell to open) {qty} shares of {symbol}? (y/n): ").strip().lower()
                 if confirm != 'y':
                     print("Trade cancelled.")
-                    return
-                order = self.api.submit_order(
-                    symbol=symbol,
-                    qty=qty,
-                    side="sell",
-                    type="market",
-                    time_in_force="gtc"
-                )
-                print(f"Order submitted! ID: {order.id}")
-            except Exception as e:
-                print(f"Trade error: {e}")
-            return
+                    continue
+                try:
+                    order = self.api.submit_order(
+                        symbol=symbol,
+                        qty=qty,
+                        side="sell",
+                        type="market",
+                        time_in_force="gtc"
+                    )
+                    print(f"Order submitted! ID: {order.id}")
+                except Exception as e:
+                    print(f"Trade error: {e}")
+
+            elif trade_type == "4":
+                try:
+                    positions = self.api.list_positions()
+                    short_pos = next((p for p in positions if p.symbol.upper() == symbol and p.side == 'short'), None)
+                    if not short_pos:
+                        print(f"No open SHORT position for {symbol}.")
+                        continue
+                    max_qty = int(float(short_pos.qty))
+                    print(f"You have an open SHORT of {max_qty} shares of {symbol}.")
+                    qty = input(f"Enter quantity to BUY TO COVER (max {max_qty}): ").strip()
+                    try:
+                        qty = int(qty)
+                    except ValueError:
+                        print("Quantity must be an integer.")
+                        continue
+                    if qty < 1 or qty > max_qty:
+                        print("Invalid quantity.")
+                        continue
+                    confirm = input(f"Confirm BUY TO COVER {qty} shares of {symbol}? (y/n): ").strip().lower()
+                    if confirm != 'y':
+                        print("Trade cancelled.")
+                        continue
+                    order = self.api.submit_order(
+                        symbol=symbol,
+                        qty=qty,
+                        side="buy",
+                        type="market",
+                        time_in_force="gtc"
+                    )
+                    print(f"Order submitted! ID: {order.id}")
+                except Exception as e:
+                    print(f"Trade error: {e}")
+
+            else:
+                print("Invalid choice. Please select a valid option.")
     def fetch_positions(self):
         """Fetch current positions with enhanced data"""
         try:
