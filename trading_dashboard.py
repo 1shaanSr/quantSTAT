@@ -214,7 +214,7 @@ class TradingDashboard:
     # Automated Strategy
     # =====================
     def run_automated_strategy(self):
-        """Main loop for automated RSI/VWAP/ATR strategy"""
+        """Main loop for automated RSI/VWAP/ATR strategy with exit option"""
         print("\n=== Automated Intraday RSI/VWAP/ATR Strategy ===")
         print(f"Symbol: {self.strategy_symbol} | Risk per trade: {self.strategy_risk_pct*100:.1f}% of equity")
         self.automated_active = True
@@ -231,12 +231,20 @@ class TradingDashboard:
                 now = datetime.now(self.eastern)
                 if now.hour < 9 or (now.hour == 9 and now.minute < 30) or now.hour >= 16:
                     print("Market is closed. Waiting for open...")
+                    user_input = input("Type 'exit' to return to menu or press Enter to keep waiting: ").strip().lower()
+                    if user_input == 'exit':
+                        print("Exiting to main menu...")
+                        break
                     time.sleep(60)
                     continue
                 # Fetch latest 5-min data
                 df = self.fetch_intraday_data(self.strategy_symbol, interval='5m', lookback=30)
                 if df is None or df.empty:
                     print("No data. Retrying...")
+                    user_input = input("Type 'exit' to return to menu or press Enter to keep retrying: ").strip().lower()
+                    if user_input == 'exit':
+                        print("Exiting to main menu...")
+                        break
                     time.sleep(self.strategy_refresh_interval)
                     continue
                 # Calculate indicators
@@ -250,6 +258,11 @@ class TradingDashboard:
                     self.execute_strategy_trade(signal, df, atr, vwap)
                 # Periodic log flush
                 self.flush_strategy_log()
+                # Allow user to exit after each loop
+                user_input = input("Type 'exit' to return to menu or press Enter to continue: ").strip().lower()
+                if user_input == 'exit':
+                    print("Exiting to main menu...")
+                    break
                 time.sleep(self.strategy_refresh_interval)
         except KeyboardInterrupt:
             print("\nAutomated strategy stopped by user.")
