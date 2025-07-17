@@ -585,16 +585,22 @@ class TradingDashboard:
         stop = 0
         target = 0
         side = None
-        equity = 100000
+        # Use buying power from Alpaca account for sizing
+        account_info = self.get_account_info()
+        equity = account_info.get('buying_power', 100000)
+        starting_equity = equity  # Save for reporting
         risk_pct = self.strategy_risk_pct
-        atr = 0
         trades = []
+        min_atr = 0.1  # Minimum ATR to avoid huge position sizes
         for i in range(15, len(df)):
             price = float(df['Close'].iloc[i])
             atr = float(df['ATR'].iloc[i]) if not pd.isna(df['ATR'].iloc[i]) else 0
             vwap = float(df['VWAP'].iloc[i]) if not pd.isna(df['VWAP'].iloc[i]) else 0
             rsi = float(df['RSI'].iloc[i]) if not pd.isna(df['RSI'].iloc[i]) else 0
             prev_rsi = float(df['RSI'].iloc[i-1]) if not pd.isna(df['RSI'].iloc[i-1]) else 0
+            # Skip if ATR or VWAP is missing or ATR is too small
+            if atr < min_atr or pd.isna(vwap):
+                continue
             if not position:
                 if prev_rsi < 30 and rsi >= 30 and price < vwap:
                     side = 'buy'
@@ -603,7 +609,7 @@ class TradingDashboard:
                 else:
                     continue
                 risk_amount = equity * risk_pct
-                qty = int(risk_amount // (atr if atr else 1))
+                qty = int(risk_amount // atr)
                 if qty < 1:
                     continue
                 entry = price
@@ -628,6 +634,7 @@ class TradingDashboard:
                             'pnl': pnl,
                             'reason': reason
                         })
+                        equity += pnl  # Update equity after each trade
                         position = None
                 elif position['side'] == 'sell':
                     if price >= position['stop'] or price <= position['target']:
@@ -640,13 +647,14 @@ class TradingDashboard:
                             'pnl': pnl,
                             'reason': reason
                         })
+                        equity += pnl  # Update equity after each trade
                         position = None
         # Results
         if not trades:
             print("No trades were made during the backtest period. This may be due to market conditions or lack of data.")
             return
-        total_pnl = sum(t['pnl'] for t in trades)
-        print(f"Backtest completed: {len(trades)} trades | Total P&L: ${total_pnl:.2f}")
+        total_pnl = equity - starting_equity
+        print(f"Backtest completed: {len(trades)} trades | Total P&L: ${total_pnl:.2f} | Starting Buying Power: ${starting_equity:.2f} | Ending Buying Power: ${equity:.2f}")
         for t in trades:
             print(f"{t['side'].upper()} | Entry: ${t['entry']:.2f} | Exit: ${t['exit']:.2f} | P&L: ${t['pnl']:.2f} | {t['reason']}")
 
@@ -669,13 +677,15 @@ class TradingDashboard:
     def get_account_info(self):
         try:
             account = self.api.get_account()
+            print("DEBUG: Alpaca account buying_power =", account.buying_power)
+            # Use getattr for optional fields to avoid attribute errors
             return {
                 'status': account.status,
                 'equity': float(account.equity),
                 'buying_power': float(account.buying_power),
                 'portfolio_value': float(account.portfolio_value),
                 'cash': float(account.cash),
-                'day_trade_buying_power': float(account.day_trade_buying_power)
+                'day_trade_buying_power': float(getattr(account, 'day_trade_buying_power', account.buying_power))
             }
         except Exception as e:
             print(f"Error getting account info: {e}")
