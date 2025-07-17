@@ -16,23 +16,31 @@ warnings.filterwarnings('ignore')
 class TradingDashboard:
     def execute_trade(self):
         print("\n=== Manual Trade Execution ===")
-        print("You can BUY (go long) or SELL (short). 'SELL' will open a short position if allowed by your account.")
+        print("Select trade type:")
+        print("1. Buy (go long)")
+        print("2. Short (sell to open)")
+        print("3. Cancel")
+        trade_type = input("Enter choice (1-3): ").strip()
+        if trade_type not in ("1", "2"):
+            print("Trade cancelled.")
+            return
+        symbol = input("Enter symbol to trade: ").strip().upper()
+        qty = input("Enter quantity: ").strip()
+        if not symbol or not qty:
+            print("Invalid input. Trade cancelled.")
+            return
         try:
-            symbol = input("Enter symbol to trade: ").strip().upper()
-            qty = input("Enter quantity: ").strip()
-            side = input("Enter side (buy/sell): ").strip().lower()
-            if not symbol or not qty or side not in ("buy", "sell"):
-                print("Invalid input. Trade cancelled.")
-                return
-            try:
-                qty = int(qty)
-            except ValueError:
-                print("Quantity must be an integer.")
-                return
-            confirm = input(f"Confirm {side.upper()} {qty} shares of {symbol}? (y/n): ").strip().lower()
-            if confirm != 'y':
-                print("Trade cancelled.")
-                return
+            qty = int(qty)
+        except ValueError:
+            print("Quantity must be an integer.")
+            return
+        side = "buy" if trade_type == "1" else "sell"
+        action = "BUY (long)" if side == "buy" else "SHORT (sell to open)"
+        confirm = input(f"Confirm {action} {qty} shares of {symbol}? (y/n): ").strip().lower()
+        if confirm != 'y':
+            print("Trade cancelled.")
+            return
+        try:
             order = self.api.submit_order(
                 symbol=symbol,
                 qty=qty,
@@ -481,47 +489,56 @@ class TradingDashboard:
         atr = 0
         trades = []
         for i in range(15, len(df)):
-            # Always use .iloc for scalar access to avoid Series ambiguity
             price = float(df['Close'].iloc[i])
             atr = float(df['ATR'].iloc[i]) if not pd.isna(df['ATR'].iloc[i]) else 0
             vwap = float(df['VWAP'].iloc[i]) if not pd.isna(df['VWAP'].iloc[i]) else 0
             rsi = float(df['RSI'].iloc[i]) if not pd.isna(df['RSI'].iloc[i]) else 0
             prev_rsi = float(df['RSI'].iloc[i-1]) if not pd.isna(df['RSI'].iloc[i-1]) else 0
             if not position:
-                # Entry signals: Buy or Short
                 if prev_rsi < 30 and rsi >= 30 and price < vwap:
                     side = 'buy'
                 elif prev_rsi > 70 and rsi <= 70 and price > vwap:
-                    side = 'sell'  # Shorting allowed
+                    side = 'sell'
                 else:
                     continue
-                risk_amt = equity * risk_pct
-                qty = int(risk_amt // (atr if atr else 1))
+                risk_amount = equity * risk_pct
+                qty = int(risk_amount // (atr if atr else 1))
                 if qty < 1:
                     continue
                 entry = price
-                stop = price - atr if side == 'buy' else price + atr
-                target = price + 1.5*atr if side == 'buy' else price - 1.5*atr
-                position = {'side': side, 'qty': qty, 'entry': entry, 'stop': stop, 'target': target, 'open_idx': i}
+                stop = entry - atr if side == 'buy' else entry + atr
+                target = entry + 1.5 * atr if side == 'buy' else entry - 1.5 * atr
+                position = {
+                    'side': side,
+                    'qty': qty,
+                    'entry': entry,
+                    'stop': stop,
+                    'target': target
+                }
             else:
-                # Exit logic
                 if position['side'] == 'buy':
-                    if price <= position['stop']:
+                    if price <= position['stop'] or price >= position['target']:
                         pnl = (price - position['entry']) * position['qty']
-                        trades.append({'entry': position['entry'], 'exit': price, 'side': 'buy', 'pnl': pnl, 'reason': 'stop'})
-                        position = None
-                    elif price >= position['target']:
-                        pnl = (price - position['entry']) * position['qty']
-                        trades.append({'entry': position['entry'], 'exit': price, 'side': 'buy', 'pnl': pnl, 'reason': 'target'})
+                        reason = 'stop' if price <= position['stop'] else 'target'
+                        trades.append({
+                            'entry': position['entry'],
+                            'exit': price,
+                            'side': 'buy',
+                            'pnl': pnl,
+                            'reason': reason
+                        })
                         position = None
                 elif position['side'] == 'sell':
-                    if price >= position['stop']:
+                    if price >= position['stop'] or price <= position['target']:
                         pnl = (position['entry'] - price) * position['qty']
-                        trades.append({'entry': position['entry'], 'exit': price, 'side': 'sell', 'pnl': pnl, 'reason': 'stop'})
-                        position = None
-                    elif price <= position['target']:
-                        pnl = (position['entry'] - price) * position['qty']
-                        trades.append({'entry': position['entry'], 'exit': price, 'side': 'sell', 'pnl': pnl, 'reason': 'target'})
+                        reason = 'stop' if price >= position['stop'] else 'target'
+                        trades.append({
+                            'entry': position['entry'],
+                            'exit': price,
+                            'side': 'sell',
+                            'pnl': pnl,
+                            'reason': reason
+                        })
                         position = None
         # Results
         if not trades:
