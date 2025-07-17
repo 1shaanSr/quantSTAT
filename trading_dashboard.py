@@ -67,7 +67,7 @@ class TradingDashboard:
                 print(f"ERROR: {symbol} - {e}")
         return data
 
-    def create_enhanced_dashboard(self):
+    def create_enhanced_dashboard(self, save_png=False):
         """Create professional dashboard with multiple panels"""
         positions_df = self.fetch_positions()
         account_info = self.get_account_info()
@@ -91,9 +91,9 @@ class TradingDashboard:
         symbols = positions_df['Symbol'].tolist()[:6]
         market_data = self.fetch_market_data(symbols)
         if market_data:
-            self.create_professional_charts(positions_df, market_data, account_info)
+            self.create_professional_charts(positions_df, market_data, account_info, save_png=save_png)
 
-    def create_professional_charts(self, positions_df, market_data, account_info):
+    def create_professional_charts(self, positions_df, market_data, account_info, save_png=False):
         """Create professional, business-appropriate charts"""
         fig = plt.figure(figsize=(20, 12))
         fig.suptitle('TRADING DASHBOARD', fontsize=24, fontweight='bold', y=0.98)
@@ -172,10 +172,11 @@ class TradingDashboard:
         fig.text(0.99, 0.01, f'Updated: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}', 
                 ha='right', va='bottom', fontsize=10, alpha=0.7)
         plt.tight_layout()
-        plt.savefig('trading_dashboard.png', dpi=300, bbox_inches='tight', 
-                   facecolor='#1a1a1a', edgecolor='none')
+        if save_png:
+            plt.savefig('trading_dashboard.png', dpi=300, bbox_inches='tight', 
+                       facecolor='#1a1a1a', edgecolor='none')
+            print(f"\nDashboard saved as 'trading_dashboard.png'")
         plt.show()
-        print(f"\nDashboard saved as 'trading_dashboard.png'")
     def __init__(self):
         self.api = None
         self.eastern = pytz.timezone("US/Eastern")
