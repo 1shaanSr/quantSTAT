@@ -1,6 +1,7 @@
 from datetime import datetime
 import time
 import pytz
+from data_handler import DataHandler
 
 class Strategy:
     def __init__(self, api_handler):
@@ -9,6 +10,7 @@ class Strategy:
         self.symbol = "SPY"
         self.risk_pct = 0.01
         self.refresh_interval = 60
+        self.data_handler = DataHandler()
         self._init_state()
 
     def _init_state(self):

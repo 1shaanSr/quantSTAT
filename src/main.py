@@ -9,11 +9,11 @@ Date: July 2025
 """
 
 from typing import Optional
-from src.alpaca_handler import AlpacaHandler
-from src.trade_executor import TradeExecutor
-from src.dashboard import Dashboard
-from src.strategy import Strategy
-from src.backtester import Backtester
+from alpaca_handler import AlpacaHandler
+from trade_executor import TradeExecutor
+from dashboard import Dashboard
+from strategy import Strategy
+from backtester import Backtester
 
 def main() -> None:
     """
