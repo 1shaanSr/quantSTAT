@@ -4,3 +4,5 @@ numpy
 matplotlib
 yfinance
 pytz
+scipy
+statsmodels

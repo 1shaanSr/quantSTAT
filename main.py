@@ -13,7 +13,7 @@ from src.alpaca_handler import AlpacaHandler
 from src.trade_executor import TradeExecutor
 from src.dashboard import Dashboard
 from src.strategy import Strategy
-from src.backtester import Backtester
+from src.backtester import StatisticalArbitrageBacktester
 
 def main() -> None:
     """
@@ -28,7 +28,7 @@ def main() -> None:
         trade_exec = TradeExecutor(api_handler)
         dashboard = Dashboard(api_handler)
         strategy = Strategy(api_handler)
-        backtester = Backtester(api_handler)
+        backtester = StatisticalArbitrageBacktester(api_handler)
 
         print("PROFESSIONAL TRADING DASHBOARD")
         print("=" * 50)
@@ -36,7 +36,7 @@ def main() -> None:
         while True:
             try:
                 _display_menu()
-                choice = input("\nEnter choice (1-6): ").strip()
+                choice = input("\nEnter choice (1-5): ").strip()
                 
                 if not _handle_menu_choice(choice, trade_exec, dashboard, strategy, backtester):
                     break
@@ -56,15 +56,14 @@ def _display_menu() -> None:
     print("2. View Dashboard")
     print("3. Refresh Data")
     print("4. Exit")
-    print("5. Automated Intraday Strategy")
-    print("6. Backtest Strategy")
+    print("5. Statistical Arbitrage Backtesting")
 
 def _handle_menu_choice(
     choice: str,
     trade_exec: TradeExecutor,
     dashboard: Dashboard,
     strategy: Strategy,
-    backtester: Backtester
+    backtester: StatisticalArbitrageBacktester
 ) -> bool:
     """
     Handle user menu selection.
@@ -90,14 +89,12 @@ def _handle_menu_choice(
         print("Goodbye!")
         return False
     elif choice == '5':
-        strategy.run_automated_strategy()
-    elif choice == '6':
         _handle_backtest(backtester)
     else:
         print("Invalid choice. Please try again.")
     return True
 
-def _handle_backtest(backtester: Backtester) -> None:
+def _handle_backtest(backtester: StatisticalArbitrageBacktester) -> None:
     """Handle backtest parameter input and execution."""
     symbol = input("Enter symbol for backtest (default SPY): ").strip().upper() or "SPY"
     days = input("Enter number of days to backtest (default 5): ").strip()
