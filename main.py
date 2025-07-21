@@ -36,7 +36,7 @@ def main() -> None:
         while True:
             try:
                 _display_menu()
-                choice = input("\nEnter choice (1-5): ").strip()
+                choice = input("\nEnter choice (1-4): ").strip()
                 
                 if not _handle_menu_choice(choice, trade_exec, dashboard, strategy, backtester):
                     break
@@ -54,9 +54,8 @@ def _display_menu() -> None:
     print("\nSELECT MODE:")
     print("1. Execute Trade")
     print("2. View Dashboard")
-    print("3. Refresh Data")
-    print("4. Exit")
-    print("5. Statistical Arbitrage Backtesting")
+    print("3. Exit")
+    print("4. Statistical Arbitrage Backtesting")
 
 def _handle_menu_choice(
     choice: str,
@@ -83,12 +82,9 @@ def _handle_menu_choice(
     elif choice == '2':
         dashboard.create_enhanced_dashboard()
     elif choice == '3':
-        print("Refreshing data...")
-        dashboard.create_enhanced_dashboard()
-    elif choice == '4':
         print("Goodbye!")
         return False
-    elif choice == '5':
+    elif choice == '4':
         _handle_backtest(backtester)
     else:
         print("Invalid choice. Please try again.")

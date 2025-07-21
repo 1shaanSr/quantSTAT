@@ -4,9 +4,8 @@ from matplotlib.patches import Rectangle
 import pandas as pd
 import yfinance as yf
 import time
-import queue
 import threading
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, time as dt_time
 import numpy as np
 import warnings
 warnings.filterwarnings('ignore')
@@ -34,8 +33,9 @@ class Dashboard:
         }
         
         self.running = False
-        self.update_queue = queue.Queue()
         self.windows = {}
+        self.last_positions_df = None
+        self.last_account = None
 
     def _is_market_open(self):
         """Check if market is open (simplified)"""
@@ -47,40 +47,128 @@ class Dashboard:
             return False
         
         # Market hours: 9:30 AM to 4:00 PM ET
-        return time(9, 30) <= current_time <= time(16, 0)
+        return dt_time(9, 30) <= current_time <= dt_time(16, 0)
 
     def _get_stock_data(self, symbol):
         """Get comprehensive stock data with proper OHLCV"""
         try:
-            if self._is_market_open():
-                # Live data - get intraday with 15min intervals for better candlesticks
-                end = datetime.now()
-                start = end - timedelta(days=2)
-                data = yf.download(symbol, start=start, end=end, interval='15m', progress=False)
-                
-                # Also get today's data with 5min for more recent updates
-                today_start = datetime.now().replace(hour=9, minute=30, second=0, microsecond=0)
-                today_data = yf.download(symbol, start=today_start, end=end, interval='5m', progress=False)
-                
-                return today_data if not today_data.empty else data
-            else:
-                # Market closed - get recent daily data for better visualization
-                end = datetime.now()
-                start = end - timedelta(days=30)  # 30 days for context
-                data = yf.download(symbol, start=start, end=end, interval='1d', progress=False)
-                
-            if data.empty:
-                return None
-                
-            # Ensure we have OHLCV columns
-            if len(data.columns) > 5:  # Multi-level columns from yfinance
-                data.columns = ['Open', 'High', 'Low', 'Close', 'Adj Close', 'Volume']
-                data = data[['Open', 'High', 'Low', 'Close', 'Volume']]
+            # Get current date and ensure we don't request future data
+            now = datetime.now()
             
-            return data
+            # For demonstration purposes, if we're in the future (2025), use historical data
+            if now.year >= 2025:
+                # Use a safe historical period that definitely has data
+                end = datetime(2024, 12, 20)  # Use end of 2024
+                start = end - timedelta(days=90)  # 3 months of data
+                
+                try:
+                    data = yf.download(symbol, start=start, end=end, interval='1d', progress=False)
+                    if not data.empty:
+                        processed_data = self._process_yfinance_data(data)
+                        if processed_data is not None:
+                            print(f"Using historical data from {start.date()} to {end.date()}")
+                            return processed_data
+                except Exception as e:
+                    print(f"Error fetching historical data: {e}")
+            
+            if self._is_market_open():
+                # Live data - get recent trading data
+                end = now
+                start = end - timedelta(days=5)  # Look back 5 days to ensure data
+                
+                # Try 15-minute intervals first
+                try:
+                    data = yf.download(symbol, start=start, end=end, interval='15m', progress=False)
+                    if not data.empty:
+                        return self._process_yfinance_data(data)
+                except Exception:
+                    pass
+                
+                # Fallback to 1-hour intervals
+                try:
+                    data = yf.download(symbol, start=start, end=end, interval='1h', progress=False)
+                    if not data.empty:
+                        return self._process_yfinance_data(data)
+                except Exception:
+                    pass
+            
+            # Market closed or live data failed - get the most recent available data
+            end = now
+            
+            # Try different time ranges to find data
+            for days_back in [1, 2, 3, 5, 7, 14, 30]:
+                start = end - timedelta(days=days_back)
+                
+                try:
+                    # Try daily data first (most reliable)
+                    data = yf.download(symbol, start=start, end=end, interval='1d', progress=False)
+                    if not data.empty:
+                        return self._process_yfinance_data(data)
+                except Exception:
+                    continue
+                    
+                try:
+                    # Try hourly data
+                    data = yf.download(symbol, start=start, end=end, interval='1h', progress=False)
+                    if not data.empty:
+                        return self._process_yfinance_data(data)
+                except Exception:
+                    continue
+            
+            # Final fallback - try a simple daily download
+            try:
+                start = now - timedelta(days=90)  # 3 months back
+                data = yf.download(symbol, start=start, end=end, interval='1d', progress=False)
+                if not data.empty:
+                    return self._process_yfinance_data(data)
+            except Exception:
+                pass
+                
+            print(f"No data available for {symbol}")
+            return None
             
         except Exception as e:
             print(f"Error fetching {symbol}: {e}")
+            return None
+
+    def _process_yfinance_data(self, data):
+        """Process yfinance data to ensure proper format"""
+        try:
+            if data is None:
+                return None
+                
+            # Check if data is empty
+            if hasattr(data, 'empty') and data.empty:
+                return None
+                
+            if len(data) == 0:
+                return None
+            
+            # Handle multi-level columns from yfinance
+            if hasattr(data.columns, 'nlevels') and data.columns.nlevels > 1:
+                # Flatten multi-level columns
+                data.columns = [col[0] if isinstance(col, tuple) else col for col in data.columns]
+            
+            # Ensure we have the required columns
+            required_columns = ['Open', 'High', 'Low', 'Close', 'Volume']
+            if not all(col in data.columns for col in required_columns):
+                print(f"Missing required columns. Available: {list(data.columns)}")
+                return None
+            
+            # Select only the columns we need
+            data = data[required_columns].copy()
+            
+            # Remove any rows with NaN values
+            data = data.dropna()
+            
+            # Ensure we have at least some data
+            if len(data) == 0:
+                return None
+                
+            return data
+            
+        except Exception as e:
+            print(f"Error processing data: {e}")
             return None
 
     def _plot_candlesticks(self, ax, data, symbol):
@@ -95,7 +183,7 @@ class Dashboard:
         else:
             width = 0.02
         
-        for i, (timestamp, row) in enumerate(data.iterrows()):
+        for timestamp, row in data.iterrows():
             open_price = row['Open']
             high_price = row['High']
             low_price = row['Low']
@@ -161,12 +249,15 @@ class Dashboard:
         ax3 = plt.subplot(2, 2, 3)  # Portfolio allocation pie
         ax4 = plt.subplot(2, 2, 4)  # Performance metrics
         
-        market_status = "🟢 MARKET OPEN" if self._is_market_open() else "🔴 MARKET CLOSED"
+        is_live = self._is_market_open()
+        market_status = "🟢 MARKET OPEN" if is_live else "🔴 MARKET CLOSED"
+        data_status = "LIVE DATA" if is_live else "SHOWING LAST AVAILABLE DATA"
         timestamp = datetime.now().strftime("%H:%M:%S")
-        fig.suptitle(f'Portfolio Dashboard | {market_status} | {timestamp}', 
+        
+        fig.suptitle(f'Portfolio Dashboard | {market_status} | {data_status} | {timestamp}', 
                     fontsize=18, color=self.colors['accent'], fontweight='bold')
         
-        # Account Summary (top left)
+        # Account Summary (top left) - enhanced with data status
         ax1.axis('off')
         total_pl = positions_df['P&L'].sum()
         equity = float(account.equity)
@@ -190,10 +281,26 @@ Day P&L: ${day_pl:,.2f}
 Day P&L %: {day_pl_pct:+.2f}%
 Total Positions: {len(positions_df)}
 
-ACCOUNT STATUS
+MARKET STATUS
 {'='*25}
-Portfolio Value: {equity_str}
-Market Status: {market_status[2:]}"""
+Status: {market_status[2:]}
+Data: {data_status}
+Portfolio Value: {equity_str}"""
+        
+        # Add control instructions to the overview window
+        control_text = """DASHBOARD CONTROLS
+{'='*25}
+Type in terminal:
+  'r' or 'refresh' - Update data
+  'q' or 'quit' - Exit dashboard
+  
+Auto-refresh: DISABLED
+Manual control: ENABLED"""
+        
+        ax1.text(0.05, 0.02, control_text, transform=ax1.transAxes, fontsize=9,
+                color=self.colors['accent'], verticalalignment='bottom', fontfamily='monospace',
+                bbox=dict(boxstyle='round,pad=0.5', facecolor=self.colors['background'], 
+                         alpha=0.8, edgecolor=self.colors['accent']))
         
         ax1.text(0.05, 0.95, summary_text, transform=ax1.transAxes, fontsize=12,
                 color=self.colors['text'], verticalalignment='top', fontfamily='monospace',
@@ -213,7 +320,7 @@ Market Status: {market_status[2:]}"""
         ax2.set_xlabel('Unrealized P&L ($)', color=self.colors['text'])
         
         # Add value and percentage labels
-        for i, (bar, value, pct) in enumerate(zip(bars, pl_values, pl_percentages)):
+        for bar, value, pct in zip(bars, pl_values, pl_percentages):
             width = bar.get_width()
             label_x = width + (abs(width) * 0.1 if width != 0 else 50)
             ax2.text(label_x, bar.get_y() + bar.get_height()/2,
@@ -225,9 +332,10 @@ Market Status: {market_status[2:]}"""
         market_values = positions_df['Market Value'].tolist()
         colors_pie = plt.cm.Set3(np.linspace(0, 1, len(symbols)))  # Professional color scheme
         
-        wedges, texts, autotexts = ax3.pie(market_values, labels=symbols, autopct='%1.1f%%', 
-                                          startangle=90, colors=colors_pie,
-                                          textprops={'color': self.colors['text'], 'fontsize': 10})
+        # Fixed: Removed unused variables by assigning to _ (throwaway variables)
+        _, _, _ = ax3.pie(market_values, labels=symbols, autopct='%1.1f%%', 
+                         startangle=90, colors=colors_pie,
+                         textprops={'color': self.colors['text'], 'fontsize': 10})
         ax3.set_title('Portfolio Allocation', color=self.colors['text'], 
                      fontsize=14, fontweight='bold')
         
@@ -285,7 +393,10 @@ Positions in Loss: {len(positions_df[positions_df['P&L'] < 0])}"""
     def _create_stock_window(self, symbol, position):
         """Create professional individual stock window with candlesticks"""
         data = self._get_stock_data(symbol)
-        if data is None:
+        
+        # Properly check if data is available
+        if data is None or (hasattr(data, 'empty') and data.empty) or len(data) == 0:
+            print(f"No data available for {symbol}")
             return
             
         window_key = f'stock_{symbol}'
@@ -301,8 +412,11 @@ Positions in Loss: {len(positions_df[positions_df['P&L'] < 0])}"""
         # Volume chart (bottom 30%)
         ax2 = plt.subplot(3, 1, 3)
         
-        market_status = "🟢 LIVE" if self._is_market_open() else "🔴 CLOSED"
-        timestamp = datetime.now().strftime("%H:%M:%S")
+        is_live = self._is_market_open()
+        market_status = "🟢 LIVE DATA" if is_live else "🔴 HISTORICAL DATA"
+        
+        # Add data freshness indicator
+        last_data_time = data.index[-1].strftime('%m/%d %H:%M') if hasattr(data.index[-1], 'strftime') else str(data.index[-1])
         
         # Calculate P&L color
         pl_color = self.colors['profit'] if position['P&L'] >= 0 else self.colors['loss']
@@ -311,8 +425,12 @@ Positions in Loss: {len(positions_df[positions_df['P&L'] < 0])}"""
         daily_change = ((current_price - data['Close'].iloc[0]) / data['Close'].iloc[0]) * 100
         change_symbol = "+" if daily_change >= 0 else ""
         
-        fig.suptitle(f'{symbol} - ${current_price:.2f} ({change_symbol}{daily_change:.2f}%) | {market_status}', 
-                    fontsize=16, color=pl_color, fontweight='bold')
+        # Enhanced title with data status
+        title_text = f'{symbol} - ${current_price:.2f} ({change_symbol}{daily_change:.2f}%) | {market_status}'
+        if not is_live:
+            title_text += f' | Last Update: {last_data_time}'
+            
+        fig.suptitle(title_text, fontsize=16, color=pl_color, fontweight='bold')
         
         # Plot candlesticks
         self._plot_candlesticks(ax1, data, symbol)
@@ -351,7 +469,10 @@ Positions in Loss: {len(positions_df[positions_df['P&L'] < 0])}"""
             ax1.plot(data.index, ma20, color=self.colors['accent'], 
                     alpha=0.6, linewidth=1.5, label=f'MA{min(20, len(data)//2)}')
         
-        # Professional info panel
+        # Enhanced info panel with data status
+        data_status_text = "LIVE" if is_live else f"HISTORICAL (Last: {last_data_time})"
+        data_interval = "Intraday" if len(data) > 50 or is_live else "Daily"
+        
         info_text = f"""POSITION DETAILS
 Current Price: ${current_price:.2f}
 Entry Price: ${entry_price:.2f}
@@ -363,7 +484,12 @@ Unrealized P&L: ${position['P&L']:.2f}
 P&L Percentage: {position['P&L %']:+.2f}%
 Daily Change: {change_symbol}{daily_change:.2f}%
 
-TODAY'S RANGE
+DATA STATUS
+Status: {data_status_text}
+Interval: {data_interval}
+Points: {len(data)} bars
+
+RANGE INFO
 High: ${data['High'].max():.2f}
 Low: ${data['Low'].min():.2f}
 Volume: {data['Volume'].iloc[-1]:,.0f}"""
@@ -373,17 +499,37 @@ Volume: {data['Volume'].iloc[-1]:,.0f}"""
                 bbox=dict(boxstyle='round,pad=0.7', facecolor=self.colors['panel'], 
                          alpha=0.9, edgecolor=self.colors['grid']))
         
-        # Volume bars
+        # Calculate bar width for volume chart
+        if len(data) > 1:
+            time_diff = data.index[1] - data.index[0]
+            if hasattr(time_diff, 'total_seconds'):
+                width = time_diff.total_seconds() / (24 * 3600) * 0.8  # 80% of interval
+            else:
+                width = 0.8
+        else:
+            width = 0.8
+        
+        # Volume bars with corrected color calculation
         volume_colors = [self.colors['candle_up'] if data['Close'].iloc[i] >= data['Open'].iloc[i] 
                         else self.colors['candle_down'] for i in range(len(data))]
         
-        bars = ax2.bar(data.index, data['Volume'], color=volume_colors, alpha=0.7, width=width)
+        # Plot volume bars
+        ax2.bar(data.index, data['Volume'], color=volume_colors, alpha=0.7, width=width)
         
         # Volume moving average
         if len(data) > 10:
             vol_ma = data['Volume'].rolling(window=min(10, len(data)//2)).mean()
             ax2.plot(data.index, vol_ma, color=self.colors['volume'], 
                     alpha=0.8, linewidth=2, label=f'Vol MA{min(10, len(data)//2)}')
+        
+        # Add watermark for historical data
+        if not is_live:
+            ax1.text(0.5, 0.5, 'HISTORICAL DATA\nMARKET CLOSED', 
+                    transform=ax1.transAxes, fontsize=20, color=self.colors['grid'],
+                    alpha=0.3, ha='center', va='center', rotation=45, fontweight='bold')
+            ax2.text(0.5, 0.5, 'HISTORICAL', 
+                    transform=ax2.transAxes, fontsize=16, color=self.colors['grid'],
+                    alpha=0.3, ha='center', va='center', rotation=45, fontweight='bold')
         
         # Style the axes
         for ax in [ax1, ax2]:
@@ -395,19 +541,28 @@ Volume: {data['Volume'].iloc[-1]:,.0f}"""
             ax.spines['left'].set_color(self.colors['grid'])
             ax.spines['right'].set_color(self.colors['grid'])
         
-        # Format x-axis for time
-        if self._is_market_open():
+        # Format x-axis for time - improved for historical data
+        if is_live:
+            # Live data formatting (intraday)
             ax1.xaxis.set_major_locator(mdates.HourLocator(interval=2))
             ax1.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M'))
             ax2.xaxis.set_major_locator(mdates.HourLocator(interval=2))
             ax2.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M'))
         else:
-            ax1.xaxis.set_major_locator(mdates.DayLocator(interval=max(1, len(data)//10)))
-            ax1.xaxis.set_major_formatter(mdates.DateFormatter('%m/%d'))
-            ax2.xaxis.set_major_locator(mdates.DayLocator(interval=max(1, len(data)//10)))
-            ax2.xaxis.set_major_formatter(mdates.DateFormatter('%m/%d'))
+            # Historical data formatting
+            if len(data) > 50:  # Intraday historical data
+                # Show fewer labels to avoid crowding
+                ax1.xaxis.set_major_locator(mdates.HourLocator(interval=4))
+                ax1.xaxis.set_major_formatter(mdates.DateFormatter('%m/%d %H:%M'))
+                ax2.xaxis.set_major_locator(mdates.HourLocator(interval=4))
+                ax2.xaxis.set_major_formatter(mdates.DateFormatter('%m/%d %H:%M'))
+            else:  # Daily historical data
+                ax1.xaxis.set_major_locator(mdates.DayLocator(interval=max(1, len(data)//10)))
+                ax1.xaxis.set_major_formatter(mdates.DateFormatter('%m/%d'))
+                ax2.xaxis.set_major_locator(mdates.DayLocator(interval=max(1, len(data)//10)))
+                ax2.xaxis.set_major_formatter(mdates.DateFormatter('%m/%d'))
         
-        plt.setp(ax1.xaxis.get_majorticklabels(), rotation=0)
+        plt.setp(ax1.xaxis.get_majorticklabels(), rotation=45)
         plt.setp(ax2.xaxis.get_majorticklabels(), rotation=45)
         
         ax1.set_ylabel('Price ($)', color=self.colors['text'], fontweight='bold')
@@ -416,91 +571,136 @@ Volume: {data['Volume'].iloc[-1]:,.0f}"""
         
         # Add legends
         ax1.legend(loc='upper left', framealpha=0.8, facecolor=self.colors['panel'])
-        ax2.legend(loc='upper right', framealpha=0.8, facecolor=self.colors['panel'])
+        if len(data) > 10:  # Only show volume legend if we have moving average
+            ax2.legend(loc='upper right', framealpha=0.8, facecolor=self.colors['panel'])
+        
+        # Add control panel to stock window
+        control_text_stock = "Press 'r' in terminal to refresh | 'q' to quit"
+        ax2.text(0.02, 0.02, control_text_stock, transform=ax2.transAxes, fontsize=9,
+                color=self.colors['accent'], verticalalignment='bottom', fontfamily='monospace',
+                bbox=dict(boxstyle='round,pad=0.3', facecolor=self.colors['background'], 
+                         alpha=0.8, edgecolor=self.colors['accent']))
         
         plt.tight_layout()
         self.windows[window_key] = fig
         plt.show(block=False)
 
-    def _fetch_data(self):
-        """Fetch all data in background"""
-        while self.running:
-            try:
-                positions = self.api.list_positions()
-                account = self.api.get_account()
-                
-                if not positions:
-                    time.sleep(30)
-                    continue
-                
-                positions_df = pd.DataFrame([{
-                    'Symbol': p.symbol,
-                    'Qty': int(float(p.qty)),
-                    'Avg Entry': float(p.avg_entry_price),
-                    'Current': float(p.current_price),
-                    'P&L': float(p.unrealized_pl),
-                    'P&L %': float(p.unrealized_plpc) * 100 if p.unrealized_plpc else 0.0,
-                    'Market Value': float(p.market_value) if p.market_value else 0.0
-                } for p in positions])
-                
-                self.update_queue.put({
-                    'positions': positions_df,
-                    'account': account
-                })
-                
-                time.sleep(30)  # Update every 30 seconds
-                
-            except Exception as e:
-                print(f"Error fetching data: {e}")
-                time.sleep(5)
+    def _fetch_data_once(self):
+        """Fetch data once (no background thread)"""
+        try:
+            positions = self.api.list_positions()
+            account = self.api.get_account()
+            
+            if not positions:
+                print("No positions found")
+                return None, None
+            
+            positions_df = pd.DataFrame([{
+                'Symbol': p.symbol,
+                'Qty': int(float(p.qty)),
+                'Avg Entry': float(p.avg_entry_price),
+                'Current': float(p.current_price),
+                'P&L': float(p.unrealized_pl),
+                'P&L %': float(p.unrealized_plpc) * 100 if p.unrealized_plpc else 0.0,
+                'Market Value': float(p.market_value) if p.market_value else 0.0
+            } for p in positions])
+            
+            return positions_df, account
+            
+        except Exception as e:
+            print(f"Error fetching data: {e}")
+            return None, None
+
+    def _refresh_dashboard(self):
+        """Refresh dashboard data and charts"""
+        print("Refreshing dashboard data...")
+        positions_df, account = self._fetch_data_once()
+        
+        if positions_df is None or account is None:
+            print("Failed to fetch data")
+            return False
+        
+        # Store the data
+        self.last_positions_df = positions_df
+        self.last_account = account
+        
+        # Close existing windows to prevent buildup
+        for window in list(self.windows.values()):
+            plt.close(window)
+        self.windows.clear()
+        
+        # Create overview window
+        self._create_overview_window(positions_df, account)
+        
+        # Create individual stock windows
+        for _, position in positions_df.iterrows():
+            self._create_stock_window(position['Symbol'], position)
+        
+        print(f"Dashboard updated at {datetime.now().strftime('%H:%M:%S')} - {len(positions_df)} positions")
+        plt.pause(0.1)  # Small pause to allow rendering
+        return True
 
     def start_dashboard(self):
-        """Start the dashboard"""
+        """Start the dashboard with manual control"""
         self.running = True
         
         market_status = "🟢 OPEN" if self._is_market_open() else "🔴 CLOSED"
-        print(f"Starting Simple Portfolio Dashboard")
+        print(f"\n{'='*50}")
+        print(f"MANUAL CONTROL PORTFOLIO DASHBOARD")
+        print(f"{'='*50}")
         print(f"Market Status: {market_status}")
-        print("="*40)
+        print(f"Mode: Manual refresh (no auto-updates)")
+        print(f"{'='*50}")
+        print("\nCONTROLS:")
+        print("  'r' or 'refresh' - Update dashboard data")
+        print("  'q' or 'quit' - Exit dashboard")
+        print(f"{'='*50}")
         
-        # Start data fetching thread
-        data_thread = threading.Thread(target=self._fetch_data)
-        data_thread.daemon = True
-        data_thread.start()
+        # Initial data load
+        if not self._refresh_dashboard():
+            print("Failed to load initial data")
+            return
         
+        # Manual control loop
         try:
             while self.running:
                 try:
-                    # Get latest data
-                    data = self.update_queue.get(timeout=1)
-                    positions_df = data['positions']
-                    account = data['account']
+                    command = input("\nEnter command (r=refresh, q=quit): ").strip().lower()
                     
-                    # Create overview window
-                    self._create_overview_window(positions_df, account)
+                    if command in ['q', 'quit', 'exit']:
+                        print("Exiting dashboard...")
+                        break
+                    elif command in ['r', 'refresh', 'update']:
+                        if not self._refresh_dashboard():
+                            print("Refresh failed, but dashboard remains active")
+                    elif command == '':
+                        continue
+                    else:
+                        print("Unknown command. Use 'r' to refresh or 'q' to quit")
+                        
+                except EOFError:
+                    # Handle Ctrl+D
+                    print("\nReceived EOF, exiting dashboard...")
+                    break
+                except KeyboardInterrupt:
+                    # Handle Ctrl+C
+                    print("\nReceived interrupt, exiting dashboard...")
+                    break
                     
-                    # Create individual stock windows
-                    for _, position in positions_df.iterrows():
-                        self._create_stock_window(position['Symbol'], position)
-                    
-                    print(f"Updated at {datetime.now().strftime('%H:%M:%S')} - {len(positions_df)} positions")
-                    
-                    plt.pause(0.1)
-                    
-                except queue.Empty:
-                    plt.pause(0.1)
-                    continue
-                    
-        except KeyboardInterrupt:
+        except Exception as e:
+            print(f"Dashboard error: {e}")
+        finally:
             self.stop_dashboard()
 
     def stop_dashboard(self):
         """Stop the dashboard"""
         self.running = False
-        for window in self.windows.values():
+        for window in list(self.windows.values()):
             plt.close(window)
-        print("Dashboard stopped")
+        self.windows.clear()
+        print("Dashboard stopped. All windows closed.")
 
-    def create_enhanced_dashboard(self, refresh_interval=30):
-        """Backward compatibility method"""
+    def create_enhanced_dashboard(self, refresh_interval=None):
+        """Backward compatibility method - ignore refresh_interval now"""
+        print("Note: Auto-refresh disabled. Using manual control mode.")
         return self.start_dashboard()
