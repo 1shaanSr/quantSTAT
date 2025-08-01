@@ -8,11 +8,13 @@ import threading
 from datetime import datetime, timedelta, time as dt_time
 import numpy as np
 import warnings
+from .trade_executor import TradeExecutor
 warnings.filterwarnings('ignore')
 
 class Dashboard:
     def __init__(self, api_handler):
         self.api = api_handler.api
+        self.trade_executor = TradeExecutor(api_handler)
         plt.style.use('dark_background')
         plt.ion()
         
@@ -665,7 +667,14 @@ Volume: {data['Volume'].iloc[-1]:,.0f}"""
         try:
             while self.running:
                 try:
-                    command = input("\nEnter command (r=refresh, q=quit): ").strip().lower()
+                    print("\nDashboard Commands:")
+                    print("r = refresh dashboard")
+                    print("b = buy stock")
+                    print("s = sell stock (close long positions)")
+                    print("h = short stock") 
+                    print("c = cover short (close short positions)")
+                    print("q = quit dashboard")
+                    command = input("\nEnter command: ").strip().lower()
                     
                     if command in ['q', 'quit', 'exit']:
                         print("Exiting dashboard...")
@@ -673,10 +682,18 @@ Volume: {data['Volume'].iloc[-1]:,.0f}"""
                     elif command in ['r', 'refresh', 'update']:
                         if not self._refresh_dashboard():
                             print("Refresh failed, but dashboard remains active")
+                    elif command in ['b', 'buy']:
+                        self._handle_dashboard_buy()
+                    elif command in ['s', 'sell']:
+                        self._handle_dashboard_sell()
+                    elif command in ['h', 'short']:
+                        self._handle_dashboard_short()
+                    elif command in ['c', 'cover']:
+                        self._handle_dashboard_cover()
                     elif command == '':
                         continue
                     else:
-                        print("Unknown command. Use 'r' to refresh or 'q' to quit")
+                        print("Unknown command. Use commands above.")
                         
                 except EOFError:
                     # Handle Ctrl+D
@@ -704,3 +721,157 @@ Volume: {data['Volume'].iloc[-1]:,.0f}"""
         """Backward compatibility method - ignore refresh_interval now"""
         print("Note: Auto-refresh disabled. Using manual control mode.")
         return self.start_dashboard()
+
+    def _handle_dashboard_buy(self):
+        """Handle buy command from dashboard"""
+        symbol = input("Enter symbol to BUY: ").strip().upper()
+        if not symbol:
+            print("Invalid input. Trade cancelled.")
+            return
+        
+        qty = input(f"Enter quantity to BUY {symbol}: ").strip()
+        if not qty:
+            print("Invalid input. Trade cancelled.")
+            return
+        try:
+            qty = int(qty)
+        except ValueError:
+            print("Quantity must be an integer.")
+            return
+        
+        confirm = input(f"Confirm BUY {qty} shares of {symbol}? (y/n): ").strip().lower()
+        if confirm != 'y':
+            print("Trade cancelled.")
+            return
+        
+        try:
+            order = self.api.submit_order(
+                symbol=symbol,
+                qty=qty,
+                side="buy",
+                type="market",
+                time_in_force="gtc"
+            )
+            print(f"Order submitted! ID: {order.id}")
+        except Exception as e:
+            print(f"Trade error: {e}")
+
+    def _handle_dashboard_sell(self):
+        """Handle sell command from dashboard"""
+        symbol = input("Enter symbol to SELL: ").strip().upper()
+        if not symbol:
+            print("Invalid input. Trade cancelled.")
+            return
+        
+        try:
+            positions = self.api.list_positions()
+            position = next((p for p in positions if p.symbol.upper() == symbol and float(p.qty) > 0), None)
+            if not position:
+                print(f"No long position found for {symbol}")
+                return
+            
+            max_qty = int(float(position.qty))
+            print(f"You own {max_qty} shares of {symbol}")
+            
+            qty = input(f"Enter quantity to SELL (max {max_qty}): ").strip()
+            try:
+                qty = int(qty)
+                if qty > max_qty:
+                    print("Cannot sell more shares than owned.")
+                    return
+            except ValueError:
+                print("Quantity must be an integer.")
+                return
+            
+            confirm = input(f"Confirm SELL {qty} shares of {symbol}? (y/n): ").strip().lower()
+            if confirm != 'y':
+                print("Trade cancelled.")
+                return
+            
+            order = self.api.submit_order(
+                symbol=symbol,
+                qty=qty,
+                side="sell",
+                type="market",
+                time_in_force="gtc"
+            )
+            print(f"Order submitted! ID: {order.id}")
+        except Exception as e:
+            print(f"Trade error: {e}")
+
+    def _handle_dashboard_short(self):
+        """Handle short command from dashboard"""
+        symbol = input("Enter symbol to SHORT: ").strip().upper()
+        if not symbol:
+            print("Invalid input. Trade cancelled.")
+            return
+        
+        qty = input(f"Enter quantity to SHORT {symbol}: ").strip()
+        if not qty:
+            print("Invalid input. Trade cancelled.")
+            return
+        try:
+            qty = int(qty)
+        except ValueError:
+            print("Quantity must be an integer.")
+            return
+        
+        confirm = input(f"Confirm SHORT {qty} shares of {symbol}? (y/n): ").strip().lower()
+        if confirm != 'y':
+            print("Trade cancelled.")
+            return
+        
+        try:
+            order = self.api.submit_order(
+                symbol=symbol,
+                qty=qty,
+                side="sell",
+                type="market",
+                time_in_force="gtc"
+            )
+            print(f"Order submitted! ID: {order.id}")
+        except Exception as e:
+            print(f"Trade error: {e}")
+
+    def _handle_dashboard_cover(self):
+        """Handle cover command from dashboard"""
+        symbol = input("Enter symbol to COVER: ").strip().upper()
+        if not symbol:
+            print("Invalid input. Trade cancelled.")
+            return
+        
+        try:
+            positions = self.api.list_positions()
+            position = next((p for p in positions if p.symbol.upper() == symbol and float(p.qty) < 0), None)
+            if not position:
+                print(f"No short position found for {symbol}")
+                return
+            
+            max_qty = abs(int(float(position.qty)))
+            print(f"You are short {max_qty} shares of {symbol}")
+            
+            qty = input(f"Enter quantity to COVER (max {max_qty}): ").strip()
+            try:
+                qty = int(qty)
+                if qty > max_qty:
+                    print("Cannot cover more shares than shorted.")
+                    return
+            except ValueError:
+                print("Quantity must be an integer.")
+                return
+            
+            confirm = input(f"Confirm COVER {qty} shares of {symbol}? (y/n): ").strip().lower()
+            if confirm != 'y':
+                print("Trade cancelled.")
+                return
+            
+            order = self.api.submit_order(
+                symbol=symbol,
+                qty=qty,
+                side="buy",
+                type="market",
+                time_in_force="gtc"
+            )
+            print(f"Order submitted! ID: {order.id}")
+        except Exception as e:
+            print(f"Trade error: {e}")

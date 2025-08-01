@@ -129,7 +129,7 @@ class TradeExecutor:
     def _handle_cover(self, symbol):
         try:
             positions = self.api.list_positions()
-            position = next((p for p in positions if p.symbol.upper() == symbol and p.side == 'short'), None)
+            position = next((p for p in positions if p.symbol.upper() == symbol and float(p.qty) < 0), None)
             if not position:
                 print(f"No short position found for {symbol}")
                 return
