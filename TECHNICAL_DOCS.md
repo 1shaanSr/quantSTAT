@@ -1,254 +1,226 @@
-# Technical Documentation: Statistical Arbitrage Implementation
+# Technical Documentation: Market-Neutral Statistical Arbitrage
 
-## Abstract
+## 1. Background: what was wrong with the previous version
 
-This document provides comprehensive technical documentation for the QuantRSI statistical arbitrage trading platform. The system implements advanced quantitative finance techniques including cointegration analysis, z-score modeling, and dynamic risk management for pairs trading strategies.
+The previous implementation reported 20-60% annual returns, Sharpe
+1.8-2.4, and Calmar 4.5-11.2. Investigation found:
 
-## Mathematical Framework
+- `_create_sample_data()` generated **fully synthetic prices** from a
+  hardcoded mean-reverting AR(1) process, explicitly engineered for
+  "maximum trading opportunities," despite `yfinance` being a listed
+  dependency. Every backtest ran against fabricated data, never real
+  market history.
+- The hedge ratio and spread mean/std were fit once via OLS over the
+  **entire** sample and reused for signals from day 1 (look-ahead bias).
+- No Sharpe, drawdown, or Calmar was computed anywhere in code. The
+  numbers in the README/docs were asserted text, not backtest output --
+  literally "Calmar Ratio: 4.5-11.2 (Return/MaxDD)" written directly into
+  a markdown file.
+- Re-running the *original* trading logic (full-sample hedge ratio, zero
+  transaction costs, hyper-aggressive z-score thresholds) against real
+  SPY/QQQ data lost money (-0.82%/yr, 49.3% win rate -- consistent with
+  noise, not edge). The positive numbers only ever existed against
+  fabricated data.
 
-### 1. Cointegration Analysis
+This document describes the replacement pipeline and how its numbers were
+derived, including the intermediate approaches that were tried and
+rejected.
 
-The platform uses the Augmented Dickey-Fuller (ADF) test to identify cointegrated asset pairs:
+## 2. Mathematical framework
+
+### 2.1 Cointegration (Engle-Granger)
+
+For two price series P1, P2, the Engle-Granger test regresses
+P2 = alpha + beta * P1 + eps, then tests the residual eps for a unit root
+(ADF). Rejecting the null (p < 0.05) indicates cointegration -- a stable
+long-run linear relationship, which is the necessary condition for a
+mean-reversion pairs trade to have a real edge rather than trading noise
+around an unanchored spread.
+
+### 2.2 Half-life filter
+
+Cointegration alone doesn't guarantee a *tradeable* relationship -- the
+reversion could take years. The spread's Ornstein-Uhlenbeck half-life is
+estimated by OLS on `d(spread)_t = a + b * spread_{t-1} + e_t`; half-life
+= -ln(2)/ln(1+b). Pairs are kept only if half-life falls in [2, 60]
+trading days -- long enough to be distinguishable from noise, short enough
+to be tradeable at daily frequency with a 20-day max holding period.
+
+### 2.3 Kalman-filtered hedge ratio
+
+Static OLS over a rolling window has two weaknesses: it lags regime
+changes (the whole window must roll past a break before beta adjusts), and
+it has arbitrary window-boundary effects. Instead, [alpha_t, beta_t] is
+modeled as a random walk:
 
 ```
-H₀: ε_t = ρε_(t-1) + μ + βt + Σ(γᵢ Δε_(t-i)) + ν_t
-H₁: ρ < 0 (stationary)
+y_t = alpha_t + beta_t * x_t + v_t         (observation, v_t ~ N(0, R))
+theta_t = theta_{t-1} + w_t                (state, w_t ~ N(0, Q))
 ```
 
-Where:
-- ε_t is the residual from the cointegrating regression
-- ρ is the coefficient testing for unit root
-- Rejection of H₀ (p-value < 0.05) indicates cointegration
+and tracked with a standard Kalman recursion (`src/kalman_hedge.py`). R is
+estimated from the residual variance of an initial 60-day OLS fit; Q is
+set via the common heuristic Q = (delta/(1-delta)) * R with delta=1e-4,
+controlling how fast beta is allowed to drift. This is a genuinely
+appropriate use of a Bayesian recursive estimator here: the object of
+interest (the hedge ratio) is explicitly modeled as evolving under
+uncertainty, and the filter's own posterior variance is then used
+downstream for position sizing (2.5) -- the uncertainty quantification is
+load-bearing, not decorative.
 
-### 2. Spread Construction
+### 2.4 Trading signal
 
-For assets P₁ and P₂, the spread is constructed as:
+The normalized innovation `z_t = e_t / sqrt(S_t)` (the Kalman filter's
+standardized one-step-ahead prediction error) is the raw signal. It is
+look-ahead free by construction -- e_t is the error in predicting day t
+using only information through day t-1.
 
-```
-Spread_t = P₂_t - β * P₁_t
-```
-
-Where β (hedge ratio) is calculated using ordinary least squares:
-
-```
-β = (X'X)⁻¹X'y
-```
-
-### 3. Z-Score Normalization
-
-The standardized z-score for trading signals:
+The raw innovation is noisy day to day; an EWMA(span=3) smoothed version
+is used as the actual trading signal:
 
 ```
-z_t = (Spread_t - μ_spread) / σ_spread
+z_ewma_t = alpha * z_t + (1 - alpha) * z_ewma_{t-1},  alpha = 2/(span+1)
 ```
 
-Where:
-- μ_spread is the historical mean of the spread
-- σ_spread is the historical standard deviation
+This is still strictly causal (uses only past/current innovations).
 
-### 4. Signal Generation
+### 2.5 Position sizing (precision weighting)
 
-**Entry Signals:**
-- Long Spread: z_t < -0.7 (spread undervalued)
-- Short Spread: z_t > +0.7 (spread overvalued)
+Position size is scaled by `sqrt(median(beta_var_history) / beta_var_t)`,
+clipped to [0.25, 1.5]. When the filter's current posterior variance on
+beta is unusually high (poorly identified relationship), the position is
+sized down; when unusually precise, sized up. This is the Bayesian
+decision-theory piece of the project: parameter uncertainty is carried
+through to risk management rather than discarded after taking a point
+estimate.
 
-**Exit Signals:**
-- Mean Reversion: |z_t| < 0.1
-- Profit Target: |z_t| < 0.05
-- Stop Loss: |z_t| > 1.5
+### 2.6 Risk-adjusted metrics
 
-## Algorithm Implementation
+All computed directly from the simulated daily equity curve
+(`src/metrics.py`):
 
-### Core Trading Loop
+```
+CAGR        = (equity[-1]/equity[0])^(252/n_days) - 1
+Sharpe      = mean(daily_excess_return) * 252 / (std(daily_return) * sqrt(252))
+MaxDD       = min[(equity_t - running_max_t) / running_max_t]
+Calmar      = CAGR / |MaxDD|
+```
+
+Two Sharpe ratios are reported (rf=0% and rf=4.5%) because the correct
+risk-free assumption for a market-neutral book is genuinely ambiguous:
+rf=0% is appropriate if the trading signal is evaluated as incremental
+alpha on top of a separately-managed cash sleeve that already earns the
+risk-free rate (the usual convention for a market-neutral overlay);
+rf=4.5% is appropriate if the entire capital base is compared against
+simply holding T-bills instead. Both are reported so the reader can apply
+whichever framing matches how the strategy would actually be capitalized.
+
+## 3. Methodology: what was tried and rejected
+
+This project deliberately documents dead ends -- a large part of the
+actual rigor here is in what was tried and discarded once it failed to
+generalize out-of-sample, not just the final configuration.
+
+### 3.1 Country-vs-country ETF pairs
+
+An early universe included developed/emerging-market country ETF buckets.
+The screen picked up EWZ-EIDO (Brazil vs Indonesia): formation p=0.03,
+half-life 42 days, in-formation backtest Sharpe 0.60 -- a good-looking
+candidate. Traded out-of-sample, it lost -8.8% max drawdown as the
+apparent relationship (really just shared EM/commodity-cycle beta, not a
+structural equilibrium) drifted. Country ETF pairs were removed from the
+universe on the structural grounds that two national equity indices have
+no arbitrage or business mechanism forcing a stable long-run relationship
+-- but this decision was made *after* seeing that result, so it carries
+real hindsight-bias risk. Documented in `src/universe.py` rather than
+hidden.
+
+### 3.2 Secondary in-sample performance filter
+
+An intermediate version added a second selection layer on top of
+cointegration screening: keep only pairs whose formation-period walk-
+forward backtest Sharpe exceeded a threshold. This is a common practice
+in industry pipelines, but here it **backfired**: the resulting 6-pair
+portfolio scored worse out-of-sample (Sharpe -0.94) than the simpler
+11-pair portfolio selected by cointegration alone (Sharpe 0.18 at that
+stage, before the signal-smoothing change in 3.3). Selecting pairs by
+their own in-sample backtest result is a second pass over the same signal
+already used for tuning, and it overfit. This filter was removed. The
+lesson is kept here because it's a common and easy mistake.
+
+### 3.3 Signal smoothing (kept)
+
+The raw single-day Kalman innovation rarely crossed the entry threshold
+for several pairs (5 of 11 pairs saw zero trades across the entire 2.83-
+year test window with the raw signal). Applying EWMA(3) smoothing to the
+innovation before thresholding was tested as a variant, tuned exclusively
+on formation folds. It improved in-formation Sharpe (0.19 -> 0.42) *and*
+out-of-sample Sharpe (0.18 -> 0.70) together -- both moving the same
+direction is the evidence that this generalized rather than overfit the
+test window (an overfit change typically improves the fitted sample while
+degrading or not affecting the held-out one). This was kept.
+
+### 3.4 Capital pooling (kept)
+
+Static equal-capital silos per pair leave capital idle for any pair
+without an open position -- with 5-6 of 11 pairs trading only a handful of
+times in 2.83 years, most allocated capital did nothing most of the time.
+Pooling capital across pairs (shared balance, gross-exposure cap) was
+tested against the silo version: Sharpe and Calmar were unchanged (as
+expected -- they are scale-invariant under proportional position sizing),
+but CAGR and absolute drawdown scaled up together at a chosen, disclosed
+gross exposure level. This is standard market-neutral book construction,
+not a fitting exercise -- no parameter here was chosen by looking at
+out-of-sample performance.
+
+## 4. Final locked configuration
+
+Derived entirely from formation-window data (`src/pairs_engine.py`):
+
+| Parameter | Value |
+|---|---|
+| Formation / test split | 65% / 35% of ~8.1 years real daily data |
+| Cointegration threshold | p < 0.05 (Engle-Granger) |
+| Half-life range | 2-60 trading days |
+| Entry / exit z-score | 2.0 / 0.5 |
+| Stop-loss z-score | 4.0 |
+| Max holding period | 20 trading days |
+| Signal smoothing | EWMA span 3 on Kalman innovation |
+| Kalman delta | 1e-4 |
+| Transaction cost | 5 bps per leg |
+| Risk per trade | 30% of pooled equity, precision-weighted |
+| Max gross exposure | 1.5x equity |
+
+## 5. Verified out-of-sample results
+
+Test window 2023-09-26 to 2026-07-31 (714 trading days), never touched by
+pair selection or hyperparameter tuning:
+
+- CAGR: +0.98%
+- Annualized volatility: 1.39%
+- Sharpe (rf=0%): 0.71 | Sharpe (rf=4.5%): -2.46
+- Sortino (rf=0%): 0.37
+- Max drawdown: -1.41% (peak 2026-06-23, trough 2026-07-29)
+- Calmar: 0.70
+- 21 trades across 11 validated pairs (several pairs traded 0 times in
+  this window -- cointegration held, but the spread simply didn't diverge
+  enough to trigger an entry)
+
+These are modest numbers by design. They are what remains after a real
+cointegration test, real transaction costs, a locked train/test split,
+and an explicit record of which shortcuts were tried and rejected. This
+is consistent with the academic literature on classical pairs trading
+(e.g. Gatev, Goetzmann & Rouwenhorst), which documents declining Sharpe
+ratios for this class of strategy on liquid instruments as it became
+crowded over the past two decades -- a simple implementation like this one
+should not be expected to show a dramatic edge on SPY-adjacent ETFs and
+large-cap pairs today.
+
+## 6. Reproducing these numbers
 
 ```python
-def execute_pairs_trading(data1, data2):
-    # 1. Cointegration Testing
-    score, p_value, _ = coint(price1, price2)
-    
-    # 2. Hedge Ratio Calculation
-    hedge_ratio = calculate_hedge_ratio(price1, price2)
-    
-    # 3. Spread Construction
-    spread = price2 - hedge_ratio * price1
-    
-    # 4. Z-Score Calculation
-    z_scores = (spread - spread.mean()) / spread.std()
-    
-    # 5. Signal Generation & Execution
-    for z_score in z_scores:
-        if abs(z_score) > entry_threshold:
-            enter_position(z_score)
-        elif position_open and should_exit(z_score):
-            close_position()
+from src.backtester import StatisticalArbitrageBacktester
+bt = StatisticalArbitrageBacktester(api_handler=None)
+bt.run(retune=False)   # locked hyperparameters, matches the numbers above
+bt.run(retune=True)    # re-runs the formation-only grid search from scratch
 ```
-
-### Risk Management Framework
-
-**Position Sizing:**
-```python
-position_size = account_balance * risk_per_trade / expected_volatility
-confidence_multiplier = min(2.0, abs(z_score) / entry_threshold)
-final_position = position_size * confidence_multiplier
-```
-
-**Stop Loss Implementation:**
-- **Level 1**: z_score reversal beyond 1.5 standard deviations
-- **Level 2**: Maximum holding period (3 days)
-- **Level 3**: Portfolio-level drawdown limits
-
-## Performance Metrics
-
-### Statistical Measures
-
-1. **Sharpe Ratio**: Risk-adjusted returns
-   ```
-   SR = (E[R] - R_f) / σ[R]
-   ```
-
-2. **Maximum Drawdown**: Peak-to-trough decline
-   ```
-   MDD = max((Peak_i - Trough_j) / Peak_i) for all i ≤ j
-   ```
-
-3. **Win Rate**: Percentage of profitable trades
-   ```
-   WR = Winning_Trades / Total_Trades × 100%
-   ```
-
-4. **Profit Factor**: Ratio of gross profits to gross losses
-   ```
-   PF = Σ(Winning_Trades) / |Σ(Losing_Trades)|
-   ```
-
-### Backtesting Results Analysis
-
-**Performance Summary (Latest Results):**
-- **Annual Return**: 22-56% (varies by time period)
-- **Win Rate**: 57-59%
-- **Trade Frequency**: 7-8 trades per week
-- **Average Holding Period**: 1-3 days
-- **Maximum Drawdown**: <5%
-
-**Statistical Significance:**
-- **T-Statistic**: > 2.0 (statistically significant alpha)
-- **Information Ratio**: 1.8-2.4
-- **Calmar Ratio**: 4.5-11.2 (Return/MaxDD)
-
-## Code Architecture
-
-### Class Hierarchy
-
-```
-StatisticalArbitrageBacktester
-├── __init__()              # Configuration setup
-├── run()                   # Main execution loop
-├── _find_best_pair()       # Pair selection algorithm
-├── _execute_pairs_trading() # Core trading logic
-├── _simulate_pairs_trades() # Backtesting engine
-├── _create_sample_data()   # Data generation
-└── _print_results()        # Performance reporting
-```
-
-### Data Flow
-
-1. **Input**: Symbol, analysis period
-2. **Pair Selection**: Correlation analysis, cointegration testing
-3. **Data Generation**: Synthetic price series with realistic characteristics
-4. **Signal Processing**: Z-score calculation, threshold comparison
-5. **Trade Execution**: Position entry/exit with risk management
-6. **Performance Attribution**: P&L calculation, metric computation
-7. **Output**: Comprehensive results report
-
-## Advanced Features
-
-### Dynamic Pair Selection
-
-The system implements intelligent pair selection using:
-
-1. **Correlation Matrix**: Identifies highly correlated assets
-2. **Cointegration Testing**: Validates long-term relationships
-3. **Synthetic Pair Creation**: Generates pairs when predefined sets insufficient
-4. **Real-time Monitoring**: Continuous relationship validation
-
-### Multi-Exit Strategy Framework
-
-**Exit Priority Hierarchy:**
-1. **Quick Profit** (0.05 z-score): Immediate small gains
-2. **Small Profit** (z-score cross zero): Conservative profit-taking
-3. **Take Profit** (0.1 z-score): Standard mean reversion
-4. **Mean Reversion** (z-score approach zero): Statistical convergence
-5. **Stop Loss** (1.5 z-score): Risk limitation
-6. **Max Holding** (3 days): Time-based exit
-
-### Confidence-Based Position Sizing
-
-```python
-base_size = balance * risk_per_trade / 50
-if abs(entry_z) > 1.5 * entry_threshold:
-    confidence_multiplier = 1.5
-elif consecutive_wins >= 3:
-    confidence_multiplier = 1.3
-else:
-    confidence_multiplier = 1.0
-
-final_position = base_size * confidence_multiplier
-```
-
-## Risk Controls
-
-### Portfolio-Level Constraints
-
-- **Maximum Positions**: 3 concurrent pairs
-- **Position Concentration**: No single position > 5% of portfolio
-- **Daily Trade Limit**: Maximum 10 trades per day
-- **Drawdown Trigger**: Halt trading if portfolio DD > 10%
-
-### Regulatory Compliance
-
-- **Pattern Day Trading**: Monitors trade frequency
-- **Position Limits**: Ensures compliance with margin requirements
-- **Risk Disclosure**: Comprehensive risk warnings in documentation
-- **Audit Trail**: Complete trade logging for regulatory review
-
-## Future Enhancements
-
-### Machine Learning Integration
-
-**Planned Implementations:**
-1. **Random Forest**: Enhanced pair selection
-2. **LSTM Networks**: Time series prediction
-3. **Reinforcement Learning**: Adaptive position sizing
-4. **Ensemble Methods**: Combined signal generation
-
-### Alternative Data Sources
-
-**Integration Roadmap:**
-1. **News Sentiment**: Event-driven signals
-2. **Options Flow**: Volatility forecasting
-3. **Social Media**: Retail sentiment analysis
-4. **Economic Indicators**: Macro factor models
-
-### Infrastructure Improvements
-
-**Technical Upgrades:**
-1. **Real-time Streaming**: WebSocket data feeds
-2. **Database Integration**: Historical data storage
-3. **Cloud Deployment**: Scalable execution platform
-4. **API Development**: RESTful service endpoints
-
-## Conclusion
-
-This statistical arbitrage implementation represents a sophisticated quantitative trading platform suitable for academic research and professional development. The system demonstrates:
-
-- **Theoretical Rigor**: Proper implementation of statistical concepts
-- **Practical Application**: Real-world trading considerations
-- **Risk Management**: Professional-grade controls
-- **Performance Validation**: Quantifiable alpha generation
-- **Scalable Architecture**: Enterprise-ready design patterns
-
-The 600+ lines of production-quality code showcase advanced programming skills, financial mathematics understanding, and systematic trading expertise valuable to both academic institutions and financial industry employers.
-
----
-
-*This documentation serves as a comprehensive technical reference for the QuantRSI statistical arbitrage trading platform. For implementation details, refer to the source code and inline documentation.*

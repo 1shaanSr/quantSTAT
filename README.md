@@ -1,181 +1,118 @@
-# QuantRSI: Professional Statistical Arbitrage Trading Platform
+# QuantSTAT: Market-Neutral Statistical Arbitrage (Pairs Trading)
 
-A sophisticated algorithmic trading platform implementing advanced statistical arbitrage strategies with real-time market data integration and comprehensive backtesting capabilities.
+A systematic pairs-trading research pipeline: Engle-Granger cointegration
+screening across an economically-grouped universe, a Kalman-filtered
+(recursive Bayesian) dynamic hedge ratio in place of a static OLS estimate,
+precision-weighted position sizing, and a genuine train/test walk-forward
+split so every reported number is out-of-sample.
 
-## 🚀 Overview
+## Why this exists
 
-This platform combines quantitative finance theory with practical implementation, featuring:
-- **Statistical Arbitrage Engine**: Advanced pairs trading with cointegration analysis
-- **Risk Management**: Dynamic position sizing and multi-layer stop-loss mechanisms
-- **Real-time Integration**: Alpaca API for live market data and trade execution
-- **Professional Architecture**: Modular design following software engineering best practices
+An earlier version of this project reported backtest results (20-60%
+annual returns, Sharpe 1.8-2.4, Calmar 4.5-11.2) that turned out to be
+generated against **synthetic price data** fabricated by the backtester
+itself, using a hardcoded mean-reverting process engineered to produce
+frequent, profitable-looking trades. None of those numbers reflected real
+market behavior. This version replaces that pipeline end to end: real
+market data, a proper cointegration test, no look-ahead bias, transaction
+costs, and a locked train/test split. See `TECHNICAL_DOCS.md` for the full
+derivation, including approaches that were tried and rejected because they
+didn't hold up out-of-sample.
 
-## 📊 Key Features
+## Methodology
 
-### Statistical Arbitrage Strategy
-- **Cointegration Testing**: Augmented Dickey-Fuller tests for pair selection
-- **Z-Score Analysis**: Mean reversion signals with configurable thresholds
-- **Dynamic Hedge Ratios**: Linear regression-based pair relationships
-- **Multi-Exit Strategies**: Profit-taking, stop-losses, and mean reversion exits
+1. **Universe**: ~100 liquid US-listed tickers grouped into buckets with an
+   a priori economic rationale (sector ETFs, same-industry stock pairs,
+   commodity-tracking ETF pairs, credit/rates ETFs, etc.) -- see
+   `src/universe.py`. Pairs are only tested within a bucket, not across the
+   full cross-product, to avoid blind data mining. Country-vs-country
+   equity ETF pairs are deliberately excluded (see comment in
+   `src/universe.py` for why).
+2. **Formation / test split**: the real daily price history (2018-2026) is
+   split 65% formation (in-sample) / 35% test (out-of-sample). Formation
+   data is used for cointegration screening and hyperparameter tuning; test
+   data is never touched until final evaluation.
+3. **Pair screening** (`src/cointegration.py`): Engle-Granger cointegration
+   test (p<0.05) plus an Ornstein-Uhlenbeck half-life filter (2-60 trading
+   days), computed only on the formation window.
+4. **Hyperparameter tuning** (`src/pairs_engine.py:tune_hyperparams`): a
+   small grid search over entry/exit z-score thresholds, evaluated via
+   rolling folds strictly inside the formation window.
+5. **Signal**: a Kalman filter (`src/kalman_hedge.py`) recursively estimates
+   a time-varying hedge ratio; the trading signal is an EWMA-smoothed
+   version of the filter's normalized innovation (standardized one-step-
+   ahead prediction error). This replaces a fixed-window OLS hedge ratio,
+   which lags regime changes.
+6. **Position sizing**: scaled by the filter's posterior precision on the
+   hedge ratio (`KalmanHedge.precision_weight`) -- smaller positions when
+   the relationship is poorly identified, larger when well identified.
+7. **Portfolio construction**: validated pairs share one capital pool
+   (rather than static per-pair silos that leave capital idle when a pair
+   has no open signal), with a cap on total concurrent gross notional.
 
-### Performance Metrics
-- **Backtesting Results**: 22-56% annual returns with 57-59% win rates
-- **Risk-Adjusted Returns**: Sharpe ratio optimization and drawdown control
-- **Trade Frequency**: Ultra-aggressive parameters achieving 7-8 trades per week
-- **Statistical Validation**: Comprehensive performance attribution analysis
+## Verified out-of-sample results
 
-### Technical Implementation
-- **Modular Architecture**: Clean separation of concerns across components
-- **Error Handling**: Robust exception management and logging
-- **Data Management**: Efficient time-series processing with pandas/numpy
-- **API Integration**: Professional-grade connection handling with Alpaca
+Test window: 2023-09-26 to 2026-07-31 (714 trading days, 2.83 years),
+never used in pair selection or hyperparameter tuning.
 
-## 🏗️ Architecture
+| Metric | Value |
+|---|---|
+| Annualized return (CAGR) | +0.98% |
+| Annualized volatility | 1.39% |
+| Sharpe (rf=0%) | 0.71 |
+| Sharpe (rf=4.5% T-bill) | -2.46 |
+| Sortino (rf=0%) | 0.37 |
+| Max drawdown | -1.41% (peak 2026-06-23 -> trough 2026-07-29) |
+| Calmar | 0.70 |
+| Trades | 21, across 11 validated pairs |
 
-```
-quantRSI/
-├── main.py                    # Application entry point
-├── src/
-│   ├── alpaca_handler.py      # API connection management
-│   ├── backtester.py          # Statistical arbitrage engine (600+ lines)
-│   ├── trade_executor.py      # Live trade execution
-│   ├── dashboard.py           # Portfolio visualization
-│   ├── strategy.py            # Automated trading strategies
-│   ├── data_handler.py        # Market data processing
-│   └── config.py              # Configuration management
-├── requirements.txt           # Dependencies
-└── README.md                  # Documentation
-```
+The two Sharpe figures reflect a genuine ambiguity in how to benchmark a
+market-neutral book, not a computation error -- see `TECHNICAL_DOCS.md` for
+which one is appropriate for which claim. These numbers are modest by
+design: they are what survives a real cointegration test, real transaction
+costs, and an untouched test set, on liquid, heavily-arbitraged
+instruments. That is the honest ceiling for a simple version of this
+strategy today, not a limitation of the code.
 
-## 📈 Statistical Methodology
+## Installation
 
-### Pair Selection Algorithm
-1. **Correlation Analysis**: Identify highly correlated asset pairs
-2. **Cointegration Testing**: Statistical validation of long-term relationships
-3. **Hedge Ratio Calculation**: Optimal position sizing via linear regression
-4. **Spread Construction**: Price difference normalization and z-score computation
-
-### Trading Logic
-```python
-# Entry Signals (Ultra-Aggressive)
-if z_score > 0.7:    # Short spread (overpriced)
-if z_score < -0.7:   # Long spread (underpriced)
-
-# Exit Signals (Risk Management)
-- Profit Target: 0.05 z-score movement
-- Stop Loss: 1.5 z-score against position
-- Mean Reversion: Return to equilibrium
-- Maximum Holding: 3-day position limits
-```
-
-### Risk Management Framework
-- **Position Sizing**: Dynamic allocation based on signal confidence
-- **Portfolio Limits**: Maximum 3 concurrent pair positions
-- **Stop Loss Hierarchy**: Multiple protection layers
-- **Momentum Adjustments**: Win-streak position scaling
-
-## 🔧 Installation & Setup
-
-### Prerequisites
 ```bash
 pip install -r requirements.txt
 ```
 
-### Configuration
-1. Obtain Alpaca API credentials (paper trading recommended)
-2. Set environment variables:
-   ```bash
-   ALPACA_API_KEY=your_key_here
-   ALPACA_SECRET_KEY=your_secret_here
-   ALPACA_BASE_URL=https://paper-api.alpaca.markets
-   ```
+Live/paper trade execution via Alpaca is optional and kept in a separate
+file because it has an unresolvable dependency conflict with `yfinance`
+(see `requirements-live.txt` for details) -- install it in its own
+virtualenv only if you need live execution.
 
-### Execution
+## Running
+
 ```bash
 python main.py
 ```
 
-## 📊 Performance Analysis
+Type `skip` at the Alpaca prompt to go straight to the menu -- backtesting
+(option 4) needs no live account. Option 4 downloads the universe, screens
+for cointegration, and runs the full portfolio backtest on real data.
 
-### Backtest Results (Latest Run)
-- **Symbol**: SPY-based pairs
-- **Period**: 100-365 days
-- **Returns**: 22-56% annualized
-- **Win Rate**: 57-59%
-- **Trade Frequency**: 110-361 trades per period
-- **Sharpe Ratio**: 1.8-2.4 (estimated)
+## Architecture
 
-### Risk Metrics
-- **Maximum Drawdown**: <5% (tight stop losses)
-- **Profit Factor**: 1.2-1.8
-- **Average Holding Period**: 1-3 days
-- **Success Rate by Exit Type**:
-  - Quick Profit: 35%
-  - Mean Reversion: 45%
-  - Stop Loss: 20%
+```
+src/
+  universe.py       # economically-grouped candidate pair universe
+  cointegration.py  # Engle-Granger + half-life screening
+  kalman_hedge.py    # recursive Bayesian hedge-ratio filter
+  metrics.py         # Sharpe/Sortino/MaxDD/Calmar from an equity curve
+  pairs_engine.py    # formation/test split, tuning, pooled-portfolio simulation
+  backtester.py      # orchestrates the pipeline for main.py
+  data_handler.py    # yfinance + RSI/VWAP/ATR indicators (used by strategy.py/dashboard.py)
+  alpaca_handler.py  # optional live/paper trading connection
+  trade_executor.py  # manual order entry via Alpaca
+  dashboard.py        # portfolio visualization via Alpaca
+  strategy.py         # simple RSI demo loop (separate from the pairs engine)
+```
 
-## 🎯 Advanced Features
+## Disclaimer
 
-### Multi-Asset Pair Universe
-- **Equity Sectors**: SPY/QQQ, XLF/XLI
-- **Commodities**: GLD/SLV, USO/XLE
-- **Fixed Income**: TLT/IEF
-- **Dynamic Selection**: Real-time correlation monitoring
-
-### Statistical Validation
-- **Cointegration P-Values**: <0.05 threshold
-- **Correlation Coefficients**: >0.3 minimum requirement
-- **Stationarity Tests**: ADF test implementation
-- **Regression Diagnostics**: R-squared and residual analysis
-
-## 🔬 Research & Development
-
-### Academic Applications
-- **Quantitative Finance**: Real-world implementation of pairs trading theory
-- **Statistical Methods**: Practical application of econometric techniques
-- **Risk Management**: Professional-grade portfolio protection strategies
-- **Software Engineering**: Clean architecture and design patterns
-
-### Professional Relevance
-- **Industry Standards**: Institutional-quality code structure
-- **Performance Metrics**: Quantifiable alpha generation
-- **Risk Controls**: Regulatory-compliant risk management
-- **Scalability**: Enterprise-ready modular design
-
-## 📚 Technical References
-
-### Key Algorithms Implemented
-1. **Engle-Granger Cointegration**: Long-term relationship testing
-2. **Ornstein-Uhlenbeck Process**: Mean reversion modeling
-3. **Kalman Filtering**: Dynamic hedge ratio adjustment (planned)
-4. **Monte Carlo Simulation**: Risk scenario analysis (planned)
-
-### Performance Attribution
-- **Alpha Generation**: Statistical edge identification
-- **Beta Neutrality**: Market-neutral positioning
-- **Volatility Harvesting**: Mean reversion capture
-- **Transaction Cost Analysis**: Slippage and commission modeling
-
-## 🚀 Future Enhancements
-
-### Planned Features
-- [ ] Machine Learning pair selection
-- [ ] Real-time risk monitoring dashboard
-- [ ] Multi-timeframe analysis
-- [ ] Options overlay strategies
-- [ ] Portfolio optimization algorithms
-- [ ] Backtesting framework expansion
-
-### Research Opportunities
-- [ ] Alternative data integration
-- [ ] Cryptocurrency pairs trading
-- [ ] High-frequency execution optimization
-- [ ] ESG factor incorporation
-
-## 📄 License
-
-This project is developed for educational and research purposes. Please ensure compliance with relevant financial regulations before live trading.
-
----
-
-**Disclaimer**: This software is for educational purposes only. Past performance does not guarantee future results. Always conduct thorough due diligence before trading with real capital.
+For educational and research purposes. Past performance, in-sample or
+out-of-sample, does not guarantee future results.

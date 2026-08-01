@@ -97,14 +97,18 @@ def _handle_menu_choice(
     return True
 
 def _handle_backtest(backtester: StatisticalArbitrageBacktester) -> None:
-    """Handle backtest parameter input and execution."""
-    symbol = input("Enter symbol for backtest (default SPY): ").strip().upper() or "SPY"
-    days = input("Enter number of days to backtest (default 5): ").strip()
-    try:
-        days = int(days)
-    except ValueError:
-        days = 5
-    backtester.run(symbol, days)
+    """
+    Handle backtest parameter input and execution. This runs the full
+    portfolio-level statistical arbitrage engine (see TECHNICAL_DOCS.md) --
+    `symbol` only highlights a pair of interest in the report, and `days`
+    only trims the reported window to the trailing N out-of-sample days.
+    """
+    symbol = input("Highlight a symbol in the report (optional, e.g. SPY): ").strip().upper() or None
+    days_raw = input("Trim report to trailing N out-of-sample days (blank = full test window): ").strip()
+    days = int(days_raw) if days_raw.isdigit() else None
+    retune_raw = input("Re-run hyperparameter tuning instead of using locked defaults? (y/N): ").strip().lower()
+    retune = retune_raw == 'y'
+    backtester.run(symbol=symbol, days=days, retune=retune)
 
 if __name__ == "__main__":
     main()
