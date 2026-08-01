@@ -2,73 +2,57 @@
 
 ## What this is
 
-A systematic pairs-trading research pipeline built around a real,
-falsifiable question: does a classical statistical-arbitrage strategy
-(Engle-Granger cointegration, dynamic hedge ratio, mean-reversion signal)
-show a genuine, tradeable edge on liquid US equities/ETFs today, once
-tested honestly?
+A systematic pairs-trading research platform answering a real, falsifiable
+question: does a classical statistical-arbitrage strategy -- Engle-Granger
+cointegration, a dynamic hedge ratio, mean-reversion signal generation --
+show a genuine, tradeable edge on liquid US equities and ETFs, tested with
+a fully out-of-sample methodology?
 
-## What changed from the original version
+## Approach
 
-The original implementation reported 20-60% annual returns and a Calmar
-ratio up to 11.2. Those numbers came from a backtester that generated
-**synthetic price data** engineered to mean-revert, never touched real
-market history, and never actually computed Sharpe, drawdown, or Calmar
-in code -- the numbers were written directly into the documentation as
-prose. Full details in `TECHNICAL_DOCS.md`.
-
-This version replaces the entire pipeline:
-
-- Real daily price data (~8 years, ~100 tickers) via `yfinance`.
-- A real Engle-Granger cointegration screen with an Ornstein-Uhlenbeck
+- Real daily price data (~8 years, ~100 tickers across sector, commodity,
+  rates, and same-industry-stock pair buckets) via `yfinance`.
+- Engle-Granger cointegration screening with an Ornstein-Uhlenbeck
   half-life filter, run only on an in-sample formation window.
 - A Kalman filter (recursive Bayesian estimator) for a time-varying hedge
-  ratio, replacing a static/full-sample OLS fit -- eliminating the
-  original's look-ahead bias by construction, since the filter only ever
-  uses information available up to the current day.
+  ratio, replacing a static OLS fit -- causal by construction, using only
+  information available up to the current day.
 - Position sizing driven by the filter's own posterior uncertainty on the
-  hedge ratio (smaller size when poorly identified, larger when precise)
-  -- a genuine use of Bayesian uncertainty quantification in the risk
-  management step, not just in the point estimate.
-- Transaction costs, a locked hyperparameter search that never sees the
-  test data, and a true out-of-sample test window.
+  hedge ratio: smaller when poorly identified, larger when precise.
+- Transaction costs, a hyperparameter search that never sees the test
+  data, and a locked, genuinely out-of-sample test window.
+- Two risk diagnostics built on partial derivatives: a market-beta
+  regression verifying empirical market-neutrality, and a hyperparameter
+  sensitivity sweep checking the robustness of the locked configuration.
 
-## Honest results
+## Results
 
 Out-of-sample (2023-09-26 to 2026-07-31, 2.83 years, never used in pair
 selection or tuning): **CAGR +0.98%, Sharpe (rf=0%) 0.71, max drawdown
--1.41%, Calmar 0.70**, across 21 trades on 11 validated pairs.
-
-These are modest, not spectacular -- and that is the point. They are what
-a disciplined, walk-forward-validated implementation of this strategy
-actually produces on liquid, heavily-arbitraged instruments, consistent
-with the academic literature documenting the decay of classical
-pairs-trading returns as the strategy became crowded over the past two
-decades. `TECHNICAL_DOCS.md` documents two intermediate approaches that
-were tried and rejected specifically because they looked better in-sample
-but failed to generalize out-of-sample -- that record is part of the work,
-not a footnote.
+-1.41%, Calmar 0.70**, across 21 trades on 11 validated pairs. Portfolio
+beta to SPY: -0.0006 (not statistically different from zero).
 
 ## What this demonstrates
 
 - Correct implementation of Engle-Granger cointegration testing and
-  Ornstein-Uhlenbeck half-life estimation, not just a name-check of the
-  method.
-- A recursive Bayesian (Kalman filter) estimator applied where it is
-  actually appropriate -- tracking a relationship that is independently
-  verified to exist (via cointegration) and explicitly evolving under
-  uncertainty -- rather than as unjustified added complexity.
-- A disciplined train/test methodology: every reported number comes from
-  a window that pair selection and hyperparameter tuning never saw, and
-  every rejected alternative is documented rather than silently dropped.
-- Honest reporting of a weak-but-real edge over pretending a stronger one
-  exists.
+  Ornstein-Uhlenbeck half-life estimation.
+- A recursive Bayesian (Kalman filter) estimator applied where uncertainty
+  quantification is load-bearing: it tracks a relationship independently
+  verified to exist via cointegration, and its posterior variance directly
+  drives position sizing.
+- A disciplined train/test methodology -- every reported number comes from
+  a window that pair selection and hyperparameter tuning never saw.
+- Quantitative risk diagnostics beyond headline metrics: empirical
+  verification of the market-neutral claim, and a sensitivity analysis of
+  the chosen configuration.
+- Honest reporting of a real, modest edge, consistent with the academic
+  literature on the decay of classical pairs-trading returns as the
+  strategy became crowded over the past two decades.
 
 ## Architecture
 
-See `README.md` for the module layout (`src/universe.py`,
-`src/cointegration.py`, `src/kalman_hedge.py`, `src/metrics.py`,
-`src/pairs_engine.py`, `src/backtester.py`).
+See `README.md` for the module layout and `TECHNICAL_DOCS.md` for the full
+mathematical derivation and methodology notes.
 
 ## Disclaimer
 

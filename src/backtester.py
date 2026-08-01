@@ -27,9 +27,8 @@ class StatisticalArbitrageBacktester:
     test (out-of-sample) window that selection/tuning never see. See
     TECHNICAL_DOCS.md for the full research derivation.
     """
-    def __init__(self, api_handler):
-        self.api = api_handler.api if hasattr(api_handler, 'api') else api_handler
-        self.initial_balance = 100_000.0
+    def __init__(self, initial_balance=100_000.0):
+        self.initial_balance = initial_balance
         self.results = None
 
     def run(self, symbol=None, days=None, retune=False, sensitivity=False):

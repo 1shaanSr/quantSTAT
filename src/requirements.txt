@@ -1,8 +1,0 @@
-alpaca-trade-api
-pandas
-numpy
-matplotlib
-yfinance
-pytz
-scipy
-statsmodels
