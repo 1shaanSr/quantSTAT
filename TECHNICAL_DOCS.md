@@ -216,11 +216,65 @@ crowded over the past two decades -- a simple implementation like this one
 should not be expected to show a dramatic edge on SPY-adjacent ETFs and
 large-cap pairs today.
 
-## 6. Reproducing these numbers
+## 6. Two supplementary partial-derivative diagnostics
+
+Both computed by `src/risk_analysis.py`, run via `bt.run(sensitivity=True)`.
+
+### 6.1 Market-beta exposure (does "market-neutral" actually hold?)
+
+Each pair is dollar/beta-hedged individually via the Kalman hedge ratio,
+but that doesn't by itself guarantee the *aggregate* book has no net market
+exposure -- sizing, timing, and which pairs happen to be open at any given
+moment could still leave a residual tilt. This is checked directly by
+regressing the portfolio's daily return against SPY's daily return:
+
+```
+PortfolioReturn_t = alpha + beta * SPYReturn_t + eps_t
+beta = d(PortfolioReturn) / d(SPYReturn)
+```
+
+Result on the out-of-sample test window: **beta = -0.0006 (t-stat -0.18,
+R-squared 0.000, correlation -0.007)**. Not statistically distinguishable
+from zero. The market-neutral claim holds up empirically, not just by
+construction -- this had not been checked before adding this diagnostic.
+
+### 6.2 Hyperparameter sensitivity (is the locked point robust or a fluke?)
+
+Local finite-difference estimates of d(Sharpe)/d(param) around the locked
+operating point (entry_z=2.0, exit_z=0.5, delta=1e-4), evaluated only on
+the same 3 formation folds used for tuning -- the test window is not
+touched by this analysis. Each parameter is perturbed +/-15% (delta
++/-50%/100%, since it spans orders of magnitude) with the other two held
+fixed:
+
+| Parameter | Sharpe (low) | Sharpe (locked) | Sharpe (high) | Verdict |
+|---|---|---|---|---|
+| entry_z | -0.05 (1.7) | 0.42 (2.0) | 0.42 (2.3) | **Fragile peak** |
+| exit_z | 0.43 (0.425) | 0.42 (0.5) | 0.43 (0.575) | Stable |
+| delta | -0.16 (5e-5) | 0.42 (1e-4) | 0.24 (2e-4) | **Fragile peak** |
+
+`exit_z` sits on a flat plateau -- moving it either direction barely
+changes Sharpe, a good sign. `entry_z` and `delta` do not: the locked
+point outperforms both neighbors by a wide margin on each axis, which is
+the classic signature of a knife-edge optimum from a 6-point grid search
+rather than a genuinely robust region. This is a real limitation, not
+resolved by this project: the reported OOS Sharpe of 0.71 was produced by
+a configuration that a finer-grained or differently-seeded formation split
+might not have selected. Two honest ways to address this in future work,
+neither implemented here to avoid re-tuning based on having now seen this
+diagnostic (which would just reintroduce the same overfitting risk this
+document keeps flagging): (a) regularize the hyperparameter search itself
+(e.g. average performance over a neighborhood of each candidate rather
+than a single point), or (b) treat entry_z/delta as themselves uncertain
+and evaluate the strategy's performance distribution across plausible
+values rather than reporting a single locked configuration.
+
+## 7. Reproducing these numbers
 
 ```python
 from src.backtester import StatisticalArbitrageBacktester
 bt = StatisticalArbitrageBacktester(api_handler=None)
-bt.run(retune=False)   # locked hyperparameters, matches the numbers above
-bt.run(retune=True)    # re-runs the formation-only grid search from scratch
+bt.run(retune=False)                   # locked hyperparameters, matches the numbers above
+bt.run(retune=True)                    # re-runs the formation-only grid search from scratch
+bt.run(sensitivity=True)               # also prints the market-beta and sensitivity diagnostics (section 6)
 ```

@@ -65,6 +65,7 @@ never used in pair selection or hyperparameter tuning.
 | Max drawdown | -1.41% (peak 2026-06-23 -> trough 2026-07-29) |
 | Calmar | 0.70 |
 | Trades | 21, across 11 validated pairs |
+| Beta to SPY | -0.0006 (t-stat -0.18, not significant) -- the market-neutral claim checks out empirically |
 
 The two Sharpe figures reflect a genuine ambiguity in how to benchmark a
 market-neutral book, not a computation error -- see `TECHNICAL_DOCS.md` for
@@ -73,6 +74,15 @@ design: they are what survives a real cointegration test, real transaction
 costs, and an untouched test set, on liquid, heavily-arbitraged
 instruments. That is the honest ceiling for a simple version of this
 strategy today, not a limitation of the code.
+
+**Known limitation**: a hyperparameter sensitivity sweep (`bt.run(sensitivity=True)`,
+`TECHNICAL_DOCS.md` section 6.2) found that `exit_z` sits on a stable
+Sharpe plateau, but `entry_z` and the Kalman `delta` do not -- the locked
+values outperform nearby alternatives by a wide margin, a classic
+knife-edge-optimum signature from a small grid search. The reported OOS
+Sharpe is real (never touched during tuning), but a different formation
+split could plausibly have locked a materially different configuration.
+Not resolved here; documented rather than hidden.
 
 ## Installation
 

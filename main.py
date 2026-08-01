@@ -108,7 +108,9 @@ def _handle_backtest(backtester: StatisticalArbitrageBacktester) -> None:
     days = int(days_raw) if days_raw.isdigit() else None
     retune_raw = input("Re-run hyperparameter tuning instead of using locked defaults? (y/N): ").strip().lower()
     retune = retune_raw == 'y'
-    backtester.run(symbol=symbol, days=days, retune=retune)
+    sensitivity_raw = input("Also run hyperparameter sensitivity analysis? (y/N): ").strip().lower()
+    sensitivity = sensitivity_raw == 'y'
+    backtester.run(symbol=symbol, days=days, retune=retune, sensitivity=sensitivity)
 
 if __name__ == "__main__":
     main()

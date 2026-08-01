@@ -4,7 +4,10 @@ from src.cointegration import screen_pairs
 from src.metrics import compute_metrics
 from src.pairs_engine import (
     download_universe, formation_test_split, tune_hyperparams, run_pooled_portfolio,
-    ENTRY_Z, EXIT_Z, STOP_Z, MAX_HOLD, COST_BPS, RISK_PER_TRADE, MAX_GROSS_EXPOSURE,
+    ENTRY_Z, EXIT_Z, STOP_Z, MAX_HOLD, COST_BPS, RISK_PER_TRADE, MAX_GROSS_EXPOSURE, DELTA,
+)
+from src.risk_analysis import (
+    market_beta_exposure, print_market_beta, hyperparameter_sensitivity, print_sensitivity,
 )
 
 
@@ -29,7 +32,7 @@ class StatisticalArbitrageBacktester:
         self.initial_balance = 100_000.0
         self.results = None
 
-    def run(self, symbol=None, days=None, retune=False):
+    def run(self, symbol=None, days=None, retune=False, sensitivity=False):
         """
         `symbol`, if provided and present in the discovered pair list, is
         just used to highlight that pair's line in the report -- the
@@ -42,6 +45,10 @@ class StatisticalArbitrageBacktester:
         `retune`, if True, re-runs the formation-only hyperparameter grid
         search instead of using the locked, documented defaults (slower,
         but reproduces exactly how those defaults were derived).
+        `sensitivity`, if True, additionally runs a local finite-difference
+        sensitivity sweep of Sharpe with respect to entry_z/exit_z/delta
+        around the locked point, on formation folds only (slower -- similar
+        cost to the tuning grid search).
         """
         print("\n=== Statistical Arbitrage Backtest: portfolio of cointegrated pairs (real data) ===")
         print("Downloading universe...")
@@ -94,6 +101,20 @@ class StatisticalArbitrageBacktester:
         self.results = {'equity': equity, 'metrics': m, 'trade_counts': trade_counts,
                          'pairs': pairs, 'screened': screened}
         self._print_results(m, trade_counts)
+
+        beta_result = None
+        if 'SPY' in prices.columns:
+            spy = prices['SPY'].loc[equity.index[0]:equity.index[-1]]
+            beta_result = market_beta_exposure(equity, spy)
+            print_market_beta(beta_result, market_symbol="SPY")
+            self.results['market_beta'] = beta_result
+
+        if sensitivity:
+            sens = hyperparameter_sensitivity(formation, pairs, entry_z, exit_z, DELTA,
+                                               capital=self.initial_balance, risk_per_trade=0.15)
+            print_sensitivity(sens)
+            self.results['sensitivity'] = sens
+
         return self.results
 
     def _print_results(self, m, trade_counts):
