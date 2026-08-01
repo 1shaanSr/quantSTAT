@@ -78,9 +78,15 @@ def _handle_menu_choice(
         bool: False if program should exit, True otherwise
     """
     if choice == '1':
-        trade_exec.execute_trade()
+        if trade_exec.api is None:
+            print("No live Alpaca connection -- restart and enter API credentials to trade.")
+        else:
+            trade_exec.execute_trade()
     elif choice == '2':
-        dashboard.create_enhanced_dashboard()
+        if dashboard.api is None:
+            print("No live Alpaca connection -- restart and enter API credentials for the dashboard.")
+        else:
+            dashboard.create_enhanced_dashboard()
     elif choice == '3':
         print("Goodbye!")
         return False
