@@ -53,10 +53,10 @@ MAX_GROSS_EXPOSURE = 1.5 # cap on total concurrent notional as a multiple of equ
 RF_ANNUAL = 0.045
 
 
-def download_universe(start='2018-01-01', end=None):
+def download_universe(start='2018-01-01', end=None, include_extended=False):
     if end is None:
         end = datetime.now().strftime('%Y-%m-%d')
-    tickers = sorted(set(t for a, b, _ in candidate_pairs() for t in (a, b)))
+    tickers = sorted(set(t for a, b, _ in candidate_pairs(include_extended=include_extended) for t in (a, b)))
     raw = yf.download(tickers, start=start, end=end, auto_adjust=True, progress=False)['Close']
     raw = raw.dropna(axis=1, thresh=int(len(raw) * 0.9))
     raw = raw.dropna(how='any')
@@ -165,7 +165,7 @@ def _simulate_pair_smoothed(price_a, price_b, entry_z=ENTRY_Z, exit_z=EXIT_Z, st
 def run_pooled_portfolio(pairs, formation, test, entry_z=ENTRY_Z, exit_z=EXIT_Z, stop_z=STOP_Z,
                           max_hold=MAX_HOLD, cost_bps=COST_BPS, risk_per_trade=RISK_PER_TRADE,
                           max_gross_exposure=MAX_GROSS_EXPOSURE, delta=DELTA, smooth_span=SMOOTH_SPAN,
-                          capital=100_000.0, burn_in=BURN_IN, rf_annual=RF_ANNUAL):
+                          capital=100_000.0, burn_in=BURN_IN, rf_annual=RF_ANNUAL, pair_weights=None):
     """
     Production trading engine: all pairs draw from ONE shared capital pool
     (not static per-pair silos, which leave idle capital doing nothing when
@@ -173,7 +173,16 @@ def run_pooled_portfolio(pairs, formation, test, entry_z=ENTRY_Z, exit_z=EXIT_Z,
     notional as a fraction of equity. Every pair's Kalman filter is warm-
     started on the tail of `formation` and then stepped through `test` --
     all reported P&L, equity, and metrics are test-period only.
+
+    `pair_weights`, if provided, is a {pair: weight} dict summing to 1
+    (e.g. from src.allocation.min_variance_weights) that scales each pair's
+    risk budget relative to equal-weight (weight * len(pairs) == 1.0 means
+    unchanged from the default equal split). If None, all pairs get an
+    equal share, matching the original behavior exactly.
     """
+    if pair_weights is None:
+        pair_weights = {p: 1.0 / len(pairs) for p in pairs}
+
     kfs, price_series, z_ewma = {}, {}, {}
     alpha = 2 / (smooth_span + 1)
     for a, b in pairs:
@@ -229,8 +238,9 @@ def run_pooled_portfolio(pairs, formation, test, entry_z=ENTRY_Z, exit_z=EXIT_Z,
                 if abs(z) > entry_z:
                     position = 'short_spread' if z > entry_z else 'long_spread'
                     notional_unit = abs(beta) * x_t + y_t
-                    weight = kf.precision_weight(beta_var)
-                    target_notional = balance * risk_per_trade * weight
+                    precision_w = kf.precision_weight(beta_var)
+                    allocation_w = pair_weights[pair] * len(pairs)
+                    target_notional = balance * risk_per_trade * precision_w * allocation_w
                     if current_gross + target_notional <= max_gross_exposure * balance:
                         units = target_notional / notional_unit if notional_unit > 0 else 0.0
                         cost = (cost_bps / 10000.0) * notional_unit * units

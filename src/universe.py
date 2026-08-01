@@ -59,17 +59,54 @@ EXPLICIT_PAIRS = [
     ('ADBE', 'CRM', 'enterprise_software'),
 ]
 
-def all_tickers():
+# A wider candidate set was tested (18 additional same-industry pairs:
+# railroads, industrial gases, waste management, tobacco, airlines,
+# insurers, regional banks, etc.). Only 3 passed the formation-window
+# cointegration screen (UNP-CSX, UAL-AAL, DPZ-PZZA), and adding them
+# lowered out-of-sample portfolio Sharpe (0.71 -> 0.51 equal-weighted) --
+# two of the three never triggered a single trade in-sample, diluting the
+# book, and the third lost money out-of-sample. Not merged into the
+# default universe above; see TECHNICAL_DOCS.md section 3 for the full
+# writeup and `EXTENDED_PAIRS` below to reproduce it.
+EXTENDED_PAIRS = [
+    ('UNP', 'CSX', 'railroads'),
+    ('LIN', 'APD', 'industrial_gases'),
+    ('WM', 'RSG', 'waste_management'),
+    ('MO', 'PM', 'tobacco'),
+    ('AMAT', 'LRCX', 'semi_equipment'),
+    ('QCOM', 'AVGO', 'semiconductors'),
+    ('DAL', 'UAL', 'airlines'),
+    ('DAL', 'LUV', 'airlines'),
+    ('UAL', 'AAL', 'airlines'),
+    ('MET', 'PRU', 'life_insurance'),
+    ('ROST', 'TJX', 'off_price_retail'),
+    ('KEY', 'CFG', 'regional_banks'),
+    ('USB', 'PNC', 'regional_banks'),
+    ('PLD', 'EGP', 'industrial_reits'),
+    ('CL', 'KMB', 'household_products'),
+    ('DPZ', 'PZZA', 'pizza_chains'),
+    ('UNH', 'ELV', 'health_insurers'),
+    ('NEE', 'AEP', 'regulated_utilities'),
+]
+
+def all_tickers(include_extended=False):
+    explicit = EXPLICIT_PAIRS + (EXTENDED_PAIRS if include_extended else [])
     bucket_tickers = set(t for tickers in BUCKETS.values() for t in tickers)
-    explicit_tickers = set(t for a, b, _ in EXPLICIT_PAIRS for t in (a, b))
+    explicit_tickers = set(t for a, b, _ in explicit for t in (a, b))
     return sorted(bucket_tickers | explicit_tickers)
 
-def candidate_pairs():
+def candidate_pairs(include_extended=False):
+    """
+    `include_extended=True` adds the 18 tested-and-not-adopted pairs from
+    EXTENDED_PAIRS (see the comment above it) -- off by default so the
+    default universe matches the documented, locked results.
+    """
     pairs = []
     for bucket, tickers in BUCKETS.items():
         for i in range(len(tickers)):
             for j in range(i + 1, len(tickers)):
                 pairs.append((tickers[i], tickers[j], bucket))
-    for a, b, tag in EXPLICIT_PAIRS:
+    explicit = EXPLICIT_PAIRS + (EXTENDED_PAIRS if include_extended else [])
+    for a, b, tag in explicit:
         pairs.append((a, b, tag))
     return pairs

@@ -4,11 +4,13 @@ from src.cointegration import screen_pairs
 from src.metrics import compute_metrics
 from src.pairs_engine import (
     download_universe, formation_test_split, tune_hyperparams, run_pooled_portfolio,
-    ENTRY_Z, EXIT_Z, STOP_Z, MAX_HOLD, COST_BPS, RISK_PER_TRADE, MAX_GROSS_EXPOSURE, DELTA,
+    _simulate_pair_smoothed, ENTRY_Z, EXIT_Z, STOP_Z, MAX_HOLD, COST_BPS, RISK_PER_TRADE,
+    MAX_GROSS_EXPOSURE, DELTA,
 )
 from src.risk_analysis import (
     market_beta_exposure, print_market_beta, hyperparameter_sensitivity, print_sensitivity,
 )
+from src.allocation import min_variance_weights
 
 
 class StatisticalArbitrageBacktester:
@@ -31,7 +33,8 @@ class StatisticalArbitrageBacktester:
         self.initial_balance = initial_balance
         self.results = None
 
-    def run(self, symbol=None, days=None, retune=False, sensitivity=False):
+    def run(self, symbol=None, days=None, retune=False, sensitivity=False,
+            extended_universe=False, min_variance=False):
         """
         `symbol`, if provided and present in the discovered pair list, is
         just used to highlight that pair's line in the report -- the
@@ -48,11 +51,16 @@ class StatisticalArbitrageBacktester:
         sensitivity sweep of Sharpe with respect to entry_z/exit_z/delta
         around the locked point, on formation folds only (slower -- similar
         cost to the tuning grid search).
+        `extended_universe` and `min_variance` reproduce two things that
+        were tried in pursuit of a higher Sharpe and did NOT beat the
+        default -- see TECHNICAL_DOCS.md section 3 for the full writeup.
+        Both default to False so the default call matches the documented,
+        locked numbers.
         """
         print("\n=== Statistical Arbitrage Backtest: portfolio of cointegrated pairs (real data) ===")
         print("Downloading universe...")
         try:
-            prices = download_universe()
+            prices = download_universe(include_extended=extended_universe)
         except Exception as e:
             print(f"Data download failed: {e}")
             return None
@@ -64,7 +72,7 @@ class StatisticalArbitrageBacktester:
               f"({len(test)} days)")
 
         print("\nScreening for cointegration (Engle-Granger + OU half-life, formation window only)...")
-        pairs_all = candidate_pairs()
+        pairs_all = candidate_pairs(include_extended=extended_universe)
         screened = screen_pairs(formation, pairs_all)
         if not screened:
             print("No pairs passed the cointegration screen on this formation window.")
@@ -85,12 +93,25 @@ class StatisticalArbitrageBacktester:
             print(f"\nUsing locked, formation-derived hyperparameters: entry_z={entry_z}, exit_z={exit_z} "
                   "(pass retune=True to re-derive)")
 
+        pair_weights = None
+        if min_variance:
+            print("\nComputing minimum-variance capital allocation from formation-period P&L "
+                  "(see TECHNICAL_DOCS.md 3.7 -- this underperformed equal-weight when tested)...")
+            pnl_frames = {}
+            for a, b in pairs:
+                pnl, _ = _simulate_pair_smoothed(formation[a], formation[b],
+                                                  capital=self.initial_balance / len(pairs), risk_per_trade=0.15)
+                pnl_frames[f"{a}-{b}"] = pnl
+            pnl_matrix = pd.DataFrame(pnl_frames)
+            weights_named = min_variance_weights(pnl_matrix)
+            pair_weights = {(a, b): weights_named[f"{a}-{b}"] for a, b in pairs}
+
         print("\nRunning pooled-capital portfolio simulation on the out-of-sample test window...")
         equity, m, trade_counts = run_pooled_portfolio(
             pairs, formation, test, entry_z=entry_z, exit_z=exit_z,
             stop_z=STOP_Z, max_hold=MAX_HOLD, cost_bps=COST_BPS,
             risk_per_trade=RISK_PER_TRADE, max_gross_exposure=MAX_GROSS_EXPOSURE,
-            capital=self.initial_balance,
+            capital=self.initial_balance, pair_weights=pair_weights,
         )
 
         if days:

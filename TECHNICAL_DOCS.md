@@ -125,6 +125,43 @@ CAGR and absolute drawdown scale with the chosen, disclosed gross-exposure
 level. This is standard market-neutral book construction, not a fitting
 exercise.
 
+### 3.1 Wider stock-pair universe (tried, not adopted)
+
+18 additional same-industry pairs (railroads, industrial gases, waste
+management, tobacco, airlines, insurers, regional banks, etc. -- see
+`EXTENDED_PAIRS` in `src/universe.py`) were added to test whether more
+candidates would improve diversification. Only 3 passed the formation
+cointegration screen: UNP-CSX (railroads), UAL-AAL (airlines), DPZ-PZZA
+(pizza chains). Adding them to the traded portfolio **lowered** equal-
+weight out-of-sample Sharpe from 0.71 to 0.51 (`bt.run(extended_universe=True)`)
+-- two of the three never triggered a single trade in the formation
+window at all, diluting the equal-weight book with dead capital, and the
+third (UAL-AAL) lost money out-of-sample. Not merged into the default
+universe. Reproducible via `bt.run(extended_universe=True)`.
+
+### 3.2 Minimum-variance capital allocation (tried, not adopted)
+
+Equal-capital weighting across pairs was replaced with weights from a
+shrinkage-regularized, capped minimum-variance solve (`src/allocation.py`)
+using each pair's formation-period daily P&L covariance, in an attempt to
+get a genuine diversification benefit beyond equal-weighting. An
+unconstrained version of this was tried first and put 66% of capital into
+DBC-PDBC (two ETFs tracking nearly identical broad-commodity indices, a
+near-arbitrage pair with very low P&L noise but a weak underlying edge) --
+a well-documented failure mode of naive minimum-variance optimization
+(it minimizes variance with no regard for expected return, so it happily
+concentrates into a low-noise, low/negative-edge asset). A capped,
+shrinkage-regularized version fixed the concentration (max weight capped
+at 2.5x equal-weight) but still **underperformed** simple equal-weighting
+out-of-sample: Sharpe 0.71 -> 0.49 on the same 11 pairs
+(`bt.run(min_variance=True)`), and 0.51 -> 0.57 combined with the wider
+universe above (`bt.run(extended_universe=True, min_variance=True)`).
+Minimum variance is, by construction, blind to which pairs actually have
+a real edge -- on a small, noisy formation sample it ended up favoring low-
+noise pairs over higher-edge ones. Not merged into the default
+configuration; kept in the codebase as a documented, reproducible negative
+result rather than removed.
+
 ## 4. Locked configuration
 
 Derived entirely from formation-window data (`src/pairs_engine.py`):
@@ -211,7 +248,10 @@ rather than a single locked configuration.
 ```python
 from src.backtester import StatisticalArbitrageBacktester
 bt = StatisticalArbitrageBacktester()
-bt.run(retune=False)          # locked hyperparameters, matches section 5
-bt.run(retune=True)           # re-runs the formation-only grid search from scratch
-bt.run(sensitivity=True)      # also prints the diagnostics in section 6
+bt.run(retune=False)                              # locked hyperparameters, matches section 5
+bt.run(retune=True)                               # re-runs the formation-only grid search from scratch
+bt.run(sensitivity=True)                          # also prints the diagnostics in section 6
+bt.run(extended_universe=True)                    # reproduces section 3.1 (not adopted)
+bt.run(min_variance=True)                         # reproduces section 3.2 (not adopted)
+bt.run(extended_universe=True, min_variance=True) # reproduces the combined result in section 3.2
 ```

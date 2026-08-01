@@ -96,7 +96,8 @@ src/
   metrics.py             # Sharpe/Sortino/MaxDD/Calmar from an equity curve
   pairs_engine.py         # formation/test split, tuning, pooled-portfolio simulation
   risk_analysis.py         # market-beta exposure + hyperparameter sensitivity
-  backtester.py             # orchestrates the pipeline
+  allocation.py             # minimum-variance capital allocation (opt-in; see TECHNICAL_DOCS.md 3.2)
+  backtester.py               # orchestrates the pipeline
 ```
 
 ## Disclaimer
