@@ -1,257 +1,173 @@
-# Technical Documentation: Market-Neutral Statistical Arbitrage
+# Technical Documentation: Risk-Parity Portfolio with an ML Factor-Tilt Overlay
 
 ## 1. Mathematical framework
 
-### 1.1 Cointegration (Engle-Granger)
+### 1.1 Factor construction
 
-For two price series P1, P2, the Engle-Granger test regresses
-P2 = alpha + beta * P1 + eps, then tests the residual eps for a unit root
-(ADF). Rejecting the null (p < 0.05) indicates cointegration -- a stable
-long-run linear relationship, the necessary condition for a mean-reversion
-pairs trade to have a real edge rather than trading noise around an
-unanchored spread.
+All factors are computed causally from OHLCV data only (`src/features.py`):
 
-### 1.2 Half-life filter
+- `mom_12_1`: cumulative return from t-252 to t-21 (skips the most recent
+  month, the classic Jegadeesh-Titman momentum definition -- skipping
+  avoids contaminating momentum with short-term reversal).
+- `mom_1m`: trailing 21-day return.
+- `rev_1w`, `rev_2w`: trailing 5- and 10-day returns (short-term reversal).
+- `vol_21d`: trailing 21-day realized volatility, annualized.
+- `vol_trend`: 21-day average volume relative to 63-day average volume.
+- `dist_from_high`: current price relative to the trailing 252-day high
+  (anchoring/momentum factor, George & Hwang 2004).
 
-Cointegration alone doesn't guarantee a *tradeable* relationship -- the
-reversion could take years. The spread's Ornstein-Uhlenbeck half-life is
-estimated by OLS on `d(spread)_t = a + b * spread_{t-1} + e_t`; half-life
-= -ln(2)/ln(1+b). Pairs are kept only if half-life falls in [2, 60]
-trading days -- long enough to be distinguishable from noise, short enough
-to be tradeable at daily frequency with a 20-day max holding period.
+Fundamental ratios (P/E, ROE, etc.) were deliberately excluded. A live
+data source's fundamentals endpoint returns the CURRENT value only, not a
+point-in-time historical series -- using it to build historical training
+features would mean a sample dated 2019 is built with 2026-vintage
+fundamental data, a severe and easy-to-miss form of look-ahead bias. Price
+and volume are the only data honestly available point-in-time from this
+data source, so the factor set is restricted to what can be trusted.
 
-### 1.3 Kalman-filtered hedge ratio
+### 1.2 Walk-forward ML predictor
 
-Static OLS over a rolling window has two weaknesses: it lags regime
-changes (the whole window must roll past a break before beta adjusts), and
-it has arbitrary window-boundary effects. Instead, [alpha_t, beta_t] is
-modeled as a random walk:
+`src/ml_predictor.py` retrains a `HistGradientBoostingRegressor` at every
+rebalance date, using an expanding window of only the training samples
+whose forward-return labels are already fully realized as of that date.
+Two leakage traps are avoided by construction:
+
+1. **Overlapping labels**: a forward-20-day return label at date t shares
+   19 of its 20 days with the label at date t+1. Training on adjacent
+   daily rows would let near-duplicate label information leak across
+   nominally different samples. Fixed by sampling training/prediction
+   dates only every 20 trading days (`forward_days` apart) -- labels never
+   overlap.
+2. **Training on future information**: at each rebalance date, only prior
+   periods are used for training, never the current or future period.
+
+Hyperparameters (`max_depth=3, max_iter=50, learning_rate=0.05,
+min_samples_leaf=30, l2_regularization=1.0`) are fixed by convention, not
+searched. Return prediction has a very low signal-to-noise ratio, and this
+project's history (see section 3) has repeatedly found that aggressively
+tuned configurations turn out to be fragile, sample-specific peaks that
+don't generalize -- a heavily-tuned complex model here would very likely
+fit formation noise rather than real signal.
+
+### 1.3 Evaluation: information coefficient, not trading Sharpe
+
+The model is evaluated by the Spearman rank correlation between its
+predictions and realized forward returns at each rebalance date (the
+"information coefficient," standard in quantitative equity research --
+see Grinold & Kahn, *Active Portfolio Management*). This is a more honest
+metric for a prediction model than backing into a trading Sharpe, since it
+directly measures forecasting skill without conflating it with position
+sizing or portfolio construction choices.
+
+An IC in the 0.02-0.05 range is generally considered a genuinely useful
+signal at the individual-stock level in the professional literature (IC of
+0.05 is often cited as a strong result for a single simple factor) --
+context for judging whether the 0.048 test-period result below is
+reasonable or suspicious.
+
+### 1.4 Risk parity
+
+`src/risk_parity.py` solves for long-only weights where every asset
+contributes equally to total portfolio variance:
 
 ```
-y_t = alpha_t + beta_t * x_t + v_t         (observation, v_t ~ N(0, R))
-theta_t = theta_{t-1} + w_t                (state, w_t ~ N(0, Q))
+minimize   sum_i (RC_i - 1/N)^2
+subject to sum(w) = 1, w >= 0
+where      RC_i = w_i * (Sigma w)_i / (w' Sigma w)
 ```
 
-and tracked with a standard Kalman recursion (`src/kalman_hedge.py`). R is
-estimated from the residual variance of an initial 60-day OLS fit; Q is
-set via the common heuristic Q = (delta/(1-delta)) * R with delta=1e-4,
-controlling how fast beta is allowed to drift. The filter's posterior
-variance on beta is then used downstream for position sizing (1.5) -- the
-uncertainty quantification is load-bearing, not decorative.
+solved via SLSQP over a shrinkage-regularized covariance matrix (`Sigma =
+(1-s)*Sigma_sample + s*diag(Sigma_sample)`, s=0.3) -- a raw sample
+covariance over 77 names from limited trailing history is noisy, the same
+lesson applied to portfolio construction throughout this project's
+history.
 
-### 1.4 Trading signal
+**Scope note**: classic risk parity (e.g. the "All Weather" style) is
+usually applied ACROSS asset classes with genuinely different risk drivers
+(equities, bonds, commodities), where the diversification benefit is large
+because the assets are only weakly correlated. Applied within a single
+equity universe, as here, all 77 names still share a common market-beta
+factor, so the benefit is real but more modest than the classic multi-
+asset-class use -- it captures a genuine low-volatility tilt (favoring
+lower-vol/lower-covariance names) rather than true cross-asset-class
+diversification. Disclosed here rather than implied to be more than it is.
 
-The normalized innovation `z_t = e_t / sqrt(S_t)` (the Kalman filter's
-standardized one-step-ahead prediction error) is the raw signal. It is
-look-ahead free by construction -- e_t is the error in predicting day t
-using only information through day t-1.
+### 1.5 ML tilt (Black-Litterman-style, confidence-scaled)
 
-The raw innovation is noisy day to day; an EWMA(span=3) smoothed version
-is used as the actual trading signal:
-
-```
-z_ewma_t = alpha * z_t + (1 - alpha) * z_ewma_{t-1},  alpha = 2/(span+1)
-```
-
-This is still strictly causal (uses only past/current innovations).
-
-### 1.5 Position sizing (precision weighting)
-
-Position size is scaled by `sqrt(median(beta_var_history) / beta_var_t)`,
-clipped to [0.25, 1.5]. When the filter's current posterior variance on
-beta is unusually high (poorly identified relationship), the position is
-sized down; when unusually precise, sized up. Parameter uncertainty is
-carried through to risk management rather than discarded after taking a
-point estimate.
-
-### 1.6 Risk-adjusted metrics
-
-All computed directly from the simulated daily equity curve
-(`src/metrics.py`):
+When used, the ML signal tilts risk-parity weights:
 
 ```
-CAGR        = (equity[-1]/equity[0])^(252/n_days) - 1
-Sharpe      = mean(daily_excess_return) * 252 / (std(daily_return) * sqrt(252))
-MaxDD       = min[(equity_t - running_max_t) / running_max_t]
-Calmar      = CAGR / |MaxDD|
+tilted_w_i = base_w_i * exp(tilt_strength * z_i)
 ```
 
-Two Sharpe ratios are reported (rf=0% and rf=4.5%) because the correct
-risk-free assumption for a market-neutral book depends on how it's
-capitalized: rf=0% is appropriate if the trading signal is evaluated as
-incremental alpha on top of a separately-managed cash sleeve that already
-earns the risk-free rate (the usual convention for a market-neutral
-overlay); rf=4.5% is appropriate if the entire capital base is compared
-against simply holding T-bills instead. Both are reported so the reader
-can apply whichever framing matches how the strategy would actually be
-capitalized.
+where `z_i` is the cross-sectionally standardized ML prediction for name
+i, renormalized to sum to 1 and capped at `max_tilt_multiple`x (default
+3x) its risk-parity base weight so a single high-scoring name can't
+dominate the book. `tilt_strength=0` reproduces pure risk parity exactly.
 
-## 2. Universe construction
+## 2. Formation-only tilt-strength decision
 
-Pairs are grouped by economic bucket (`src/universe.py`) -- sector ETFs,
-same-industry stock pairs, commodity/rates/credit ETFs -- so every
-candidate pair has an a priori structural rationale before any statistical
-test is run, rather than testing the full cross-product of an unrelated
-universe.
+`tilt_strength` was chosen via 3 rolling formation folds, evaluating
+portfolio Sharpe at tilt strengths from 0.0 to 3.0:
 
-Country-vs-country equity ETF pairs (e.g. Brazil vs Indonesia) are
-deliberately excluded: two national equity indices have no arbitrage or
-business mechanism forcing a stable long-run relationship, and observed
-correlation between them is typically just shared global-growth/EM beta --
-the classic spurious-regression pattern. A pair from this category that
-passed the cointegration screen (p=0.03, half-life 42 days) was tested and
-lost -8.8% out-of-sample as the relationship drifted, confirming the
-structural concern; the category is excluded from the universe.
-
-## 3. Methodology notes
-
-A second selection layer was evaluated on top of cointegration screening:
-keep only pairs whose formation-period walk-forward backtest Sharpe
-exceeded a threshold. This is common in industry pipelines but performed
-worse out-of-sample here than selecting by cointegration alone --
-filtering pairs by their own in-sample backtest result is a second pass
-over the same signal already used for tuning, and it overfit. It is not
-used in the final pipeline.
-
-EWMA-smoothing the Kalman innovation (1.4) was validated by checking that
-in-formation and out-of-sample Sharpe improved together when it was
-introduced -- both moving the same direction is evidence of genuine
-generalization rather than overfitting to either window.
-
-Capital pooling (portfolio construction) was checked against static
-per-pair capital silos: Sharpe and Calmar are unchanged under proportional
-position scaling (as expected, since they are scale-invariant), while
-CAGR and absolute drawdown scale with the chosen, disclosed gross-exposure
-level. This is standard market-neutral book construction, not a fitting
-exercise.
-
-### 3.1 Wider stock-pair universe (tried, not adopted)
-
-18 additional same-industry pairs (railroads, industrial gases, waste
-management, tobacco, airlines, insurers, regional banks, etc. -- see
-`EXTENDED_PAIRS` in `src/universe.py`) were added to test whether more
-candidates would improve diversification. Only 3 passed the formation
-cointegration screen: UNP-CSX (railroads), UAL-AAL (airlines), DPZ-PZZA
-(pizza chains). Adding them to the traded portfolio **lowered** equal-
-weight out-of-sample Sharpe from 0.71 to 0.51 (`bt.run(extended_universe=True)`)
--- two of the three never triggered a single trade in the formation
-window at all, diluting the equal-weight book with dead capital, and the
-third (UAL-AAL) lost money out-of-sample. Not merged into the default
-universe. Reproducible via `bt.run(extended_universe=True)`.
-
-### 3.2 Minimum-variance capital allocation (tried, not adopted)
-
-Equal-capital weighting across pairs was replaced with weights from a
-shrinkage-regularized, capped minimum-variance solve (`src/allocation.py`)
-using each pair's formation-period daily P&L covariance, in an attempt to
-get a genuine diversification benefit beyond equal-weighting. An
-unconstrained version of this was tried first and put 66% of capital into
-DBC-PDBC (two ETFs tracking nearly identical broad-commodity indices, a
-near-arbitrage pair with very low P&L noise but a weak underlying edge) --
-a well-documented failure mode of naive minimum-variance optimization
-(it minimizes variance with no regard for expected return, so it happily
-concentrates into a low-noise, low/negative-edge asset). A capped,
-shrinkage-regularized version fixed the concentration (max weight capped
-at 2.5x equal-weight) but still **underperformed** simple equal-weighting
-out-of-sample: Sharpe 0.71 -> 0.49 on the same 11 pairs
-(`bt.run(min_variance=True)`), and 0.51 -> 0.57 combined with the wider
-universe above (`bt.run(extended_universe=True, min_variance=True)`).
-Minimum variance is, by construction, blind to which pairs actually have
-a real edge -- on a small, noisy formation sample it ended up favoring low-
-noise pairs over higher-edge ones. Not merged into the default
-configuration; kept in the codebase as a documented, reproducible negative
-result rather than removed.
-
-## 4. Locked configuration
-
-Derived entirely from formation-window data (`src/pairs_engine.py`):
-
-| Parameter | Value |
+| tilt_strength | avg formation Sharpe |
 |---|---|
-| Formation / test split | 65% / 35% of ~8.1 years real daily data |
-| Cointegration threshold | p < 0.05 (Engle-Granger) |
-| Half-life range | 2-60 trading days |
-| Entry / exit z-score | 2.0 / 0.5 |
-| Stop-loss z-score | 4.0 |
-| Max holding period | 20 trading days |
-| Signal smoothing | EWMA span 3 on Kalman innovation |
-| Kalman delta | 1e-4 |
-| Transaction cost | 5 bps per leg |
-| Risk per trade | 30% of pooled equity, precision-weighted |
-| Max gross exposure | 1.5x equity |
+| **0.0** | **0.913** |
+| 0.25 | 0.897 |
+| 0.5 | 0.881 |
+| 1.0 | 0.866 |
+| 1.5 | 0.859 |
+| 2.0 | 0.866 |
+| 3.0 | 0.881 |
 
-## 5. Out-of-sample results
+Every non-zero tilt strength underperformed pure risk parity in formation.
+This is consistent with the formation-period IC (below) being
+indistinguishable from zero -- the model genuinely had no demonstrated
+skill during formation, so tilting toward its predictions correctly hurt
+performance. **Locked: tilt_strength=0.0.**
 
-Test window 2023-09-26 to 2026-07-31 (714 trading days), never touched by
-pair selection or hyperparameter tuning:
+Purely for transparency (not used to make this decision), the same sweep
+on the test period shows the same pattern -- Sharpe is flat-to-declining
+as tilt strength increases (1.47 at 0.0, 1.43 at 1.0, 1.37 at 2.0), CAGR
+rises slightly as the tilt takes more concentrated bets. The formation-
+only decision and the test-period-informational check agree, which is
+reassuring evidence the formation-based selection process is sound --
+though it was not, and should not be, the basis for the decision itself.
 
-- CAGR: +0.98%
-- Annualized volatility: 1.39%
-- Sharpe (rf=0%): 0.71 | Sharpe (rf=4.5%): -2.46
-- Sortino (rf=0%): 0.37
-- Max drawdown: -1.41% (peak 2026-06-23, trough 2026-07-29)
-- Calmar: 0.70
-- 21 trades across 11 validated pairs
+## 3. Project history: why this replaced a pairs-trading strategy
 
-This is consistent with the academic literature on classical pairs trading
-(e.g. Gatev, Goetzmann & Rouwenhorst), which documents declining Sharpe
-ratios for this class of strategy on liquid instruments as it became
-crowded over the past two decades -- a disciplined, walk-forward-validated
-implementation on SPY-adjacent ETFs and large-cap pairs today should
-produce a real but modest edge, not a dramatic one.
+This repository previously implemented a market-neutral statistical
+arbitrage strategy (Engle-Granger cointegration pairs, Kalman-filtered
+hedge ratios). That approach was rigorously validated end to end and
+achieved a genuine 0.71 Sharpe / 0.70 Calmar out-of-sample -- but repeated
+attempts to improve on it (minimum-variance capital allocation, a wider
+pair universe, structurally-enforced dual-class share arbitrage, and
+classic cross-sectional short-term reversal) all either failed to beat
+that baseline or, in one case, appeared to reach Sharpe 3.4 before being
+traced to a liquidity artifact (one leg of the pair trading only ~100-300
+shares/day, producing stale, non-executable closing prices -- a lesson
+directly informing the strict $10M/day liquidity bar on this project's
+universe). Across four independently-tested strategy families, price-
+prediction and pairwise-relationship approaches on liquid public daily-bar
+equity data consistently topped out at or below Sharpe ~0.7-1.0 once
+properly validated -- consistent with the well-documented decay of
+classical statistical arbitrage effects as they became crowded over the
+past two decades (see e.g. Khandani & Lo on the 2007 quant quake).
 
-## 6. Risk diagnostics
+This project reflects a deliberate pivot in approach rather than another
+attempt at the same thing: instead of trying to predict which stocks will
+outperform (the exercise that kept failing), it leads with portfolio
+construction -- risk parity reliably improves risk-adjusted return through
+genuine diversification math, not through forecasting skill, which is a
+structurally different and more dependable source of edge. The ML
+component is still built and evaluated rigorously (honest IC, proper
+walk-forward validation), but is not required to carry the result, and
+this document reports plainly that it currently doesn't.
 
-Both computed by `src/risk_analysis.py`, run via `bt.run(sensitivity=True)`.
-
-### 6.1 Market-beta exposure
-
-Each pair is dollar/beta-hedged individually via the Kalman hedge ratio;
-whether the *aggregate* book stays market-neutral in practice (given
-sizing, timing, and which pairs happen to be open at any moment) is
-checked directly by regressing the portfolio's daily return against SPY's
-daily return:
-
-```
-PortfolioReturn_t = alpha + beta * SPYReturn_t + eps_t
-```
-
-Result: **beta = -0.0006 (t-stat -0.18, R-squared 0.000)** -- not
-statistically distinguishable from zero. The book is empirically
-market-neutral, not just neutral by construction.
-
-### 6.2 Hyperparameter sensitivity
-
-Local finite-difference estimates of d(Sharpe)/d(param) around the locked
-operating point, evaluated only on the formation folds used for tuning --
-the test window is not touched by this analysis. Each parameter is
-perturbed +/-15% (delta +/-50%/100%, since it spans orders of magnitude)
-with the other two held fixed:
-
-| Parameter | Sharpe (low) | Sharpe (locked) | Sharpe (high) | Region |
-|---|---|---|---|---|
-| entry_z | -0.05 (1.7) | 0.42 (2.0) | 0.42 (2.3) | Narrow peak |
-| exit_z | 0.43 (0.425) | 0.42 (0.5) | 0.43 (0.575) | Flat plateau |
-| delta | -0.16 (5e-5) | 0.42 (1e-4) | 0.24 (2e-4) | Narrow peak |
-
-`exit_z` sits on a flat plateau. `entry_z` and `delta` sit at points that
-outperform their immediate neighbors by a wide margin on a 6-point grid --
-a narrower region of good performance than `exit_z`. Two directions for
-tightening this in future work: (a) regularize the hyperparameter search
-by averaging performance over a neighborhood of each candidate rather than
-a single point, or (b) treat entry_z/delta as themselves uncertain and
-evaluate the strategy's performance distribution across plausible values
-rather than a single locked configuration.
-
-## 7. Reproducing these numbers
+## 4. Reproducing these numbers
 
 ```python
-from src.backtester import StatisticalArbitrageBacktester
-bt = StatisticalArbitrageBacktester()
-bt.run(retune=False)                              # locked hyperparameters, matches section 5
-bt.run(retune=True)                               # re-runs the formation-only grid search from scratch
-bt.run(sensitivity=True)                          # also prints the diagnostics in section 6
-bt.run(extended_universe=True)                    # reproduces section 3.1 (not adopted)
-bt.run(min_variance=True)                         # reproduces section 3.2 (not adopted)
-bt.run(extended_universe=True, min_variance=True) # reproduces the combined result in section 3.2
+from src.backtester import RiskParityMLBacktester
+bt = RiskParityMLBacktester()
+bt.run()                        # locked config: tilt_strength=0.0, matches section above
+bt.run(tilt_strength=1.0)       # informational -- not the locked/recommended configuration
 ```

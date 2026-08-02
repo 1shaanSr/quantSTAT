@@ -1,27 +1,28 @@
 """
-QuantSTAT: Market-Neutral Statistical Arbitrage
-------------------------------------------------
-Engle-Granger cointegration screening, a Kalman-filtered dynamic hedge
-ratio, and a locked train/test walk-forward split, run over real market
-data. See README.md for methodology and TECHNICAL_DOCS.md for the full
-derivation.
+Risk-Parity Portfolio with an ML Factor-Tilt Overlay
+------------------------------------------------------
+A walk-forward gradient-boosting return predictor (evaluated by honest
+information coefficient, not an inflated trading Sharpe) feeding a
+confidence-scaled tilt on top of a risk-parity base allocation across a
+liquid large-cap universe. See README.md for methodology and
+TECHNICAL_DOCS.md for the full derivation, including why the ML tilt is
+NOT used in the locked configuration.
 """
 
-from src.backtester import StatisticalArbitrageBacktester
+from src.backtester import RiskParityMLBacktester
 
 
 def main() -> None:
-    print("QuantSTAT -- Market-Neutral Statistical Arbitrage")
+    print("Risk-Parity Portfolio + ML Factor Tilt")
     print("=" * 55)
 
-    symbol = input("Highlight a symbol in the report (optional, e.g. SPY): ").strip().upper() or None
-    days_raw = input("Trim report to trailing N out-of-sample days (blank = full test window): ").strip()
-    days = int(days_raw) if days_raw.isdigit() else None
-    retune = input("Re-run hyperparameter tuning instead of using locked defaults? (y/N): ").strip().lower() == 'y'
-    sensitivity = input("Also run market-beta and hyperparameter sensitivity analysis? (y/N): ").strip().lower() == 'y'
+    tilt_raw = input("Tilt strength (blank = locked default 0.0 = pure risk parity): ").strip()
+    tilt_strength = float(tilt_raw) if tilt_raw else None
+    cost_raw = input("Transaction cost in bps (blank = 10): ").strip()
+    cost_bps = float(cost_raw) if cost_raw else 10
 
-    backtester = StatisticalArbitrageBacktester()
-    backtester.run(symbol=symbol, days=days, retune=retune, sensitivity=sensitivity)
+    bt = RiskParityMLBacktester()
+    bt.run(tilt_strength=tilt_strength, cost_bps=cost_bps)
 
 
 if __name__ == "__main__":
