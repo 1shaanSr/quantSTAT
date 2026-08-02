@@ -11,8 +11,10 @@ import pandas as pd
 import yfinance as yf
 
 from src.universe import TICKERS
-from src.features import build_feature_panel
+from src.features import build_feature_panel, FEATURE_COLS, FEATURE_COLS_WITH_DIVIDENDS
+from src.dividend_features import fetch_dividend_history, build_dividend_features
 from src.ml_predictor import walk_forward_predict, summarize_ic
+from src.adaptive_tilt import build_adaptive_tilt_schedule
 from src.portfolio_backtest import run_portfolio
 from src.metrics import compute_metrics, print_metrics
 
@@ -34,7 +36,13 @@ class RiskParityMLBacktester:
         volume = raw['Volume'][close.columns].reindex(close.index)
         return close, volume
 
-    def run(self, tilt_strength=None, cost_bps=10):
+    def run(self, tilt_strength=None, cost_bps=10, include_dividends=False, adaptive_tilt=False):
+        """
+        `include_dividends` and `adaptive_tilt` reproduce two more things
+        tried in the ML-signal investigation (TECHNICAL_DOCS.md section 4)
+        -- neither improved on the locked configuration, so both default
+        to False. `tilt_strength` is ignored if `adaptive_tilt=True`.
+        """
         tilt_strength = TILT_STRENGTH if tilt_strength is None else tilt_strength
 
         print("\n=== Risk-Parity + ML Factor Tilt Backtest (real data) ===")
@@ -42,12 +50,20 @@ class RiskParityMLBacktester:
         close, volume = self._download()
         print(f"Data: {close.index[0].date()} to {close.index[-1].date()} ({len(close)} days, {close.shape[1]} tickers)")
 
+        div_yield = div_growth = None
+        if include_dividends:
+            print("Fetching dividend history for div_yield/div_growth factors...")
+            div_by_ticker = fetch_dividend_history(close.columns.tolist(), close.index[0], close.index[-1])
+            div_yield, div_growth = build_dividend_features(close, div_by_ticker)
+
         print("Building causal factor panel and walk-forward ML predictions...")
-        panel = build_feature_panel(close, volume, forward_days=FORWARD_DAYS)
+        panel = build_feature_panel(close, volume, forward_days=FORWARD_DAYS,
+                                     div_yield=div_yield, div_growth=div_growth)
         all_dates = sorted(panel['date'].dropna().unique())
         rebalance_dates = all_dates[::FORWARD_DAYS]
 
-        pred_df, ic_df = walk_forward_predict(panel, rebalance_dates)
+        feature_cols = FEATURE_COLS_WITH_DIVIDENDS if include_dividends else FEATURE_COLS
+        pred_df, ic_df = walk_forward_predict(panel, rebalance_dates, feature_cols=feature_cols)
 
         # Split on dates the ML model actually produced predictions for
         # (i.e. after the min_train_periods burn-in) so the formation/test
@@ -70,23 +86,31 @@ class RiskParityMLBacktester:
         summarize_ic(ic_formation, label="ML return predictor -- formation")
         summarize_ic(ic_test, label="ML return predictor -- TRUE OOS")
 
-        print(f"\nRunning risk-parity portfolio (tilt_strength={tilt_strength}) on the out-of-sample test window...")
-        pnl, weight_history = run_portfolio(close, pred_df, test_dates, tilt_strength=tilt_strength,
+        if adaptive_tilt:
+            print("\nBuilding adaptive tilt schedule (trailing realized IC, causal)...")
+            tilt_arg = build_adaptive_tilt_schedule(ic_df, test_dates)
+            tilt_label = "adaptive (trailing-IC-scaled)"
+        else:
+            tilt_arg = tilt_strength
+            tilt_label = str(tilt_strength)
+
+        print(f"\nRunning risk-parity portfolio (tilt={tilt_label}) on the out-of-sample test window...")
+        pnl, weight_history = run_portfolio(close, pred_df, test_dates, tilt_strength=tilt_arg,
                                              cost_bps=cost_bps, capital=self.initial_balance)
         equity = self.initial_balance + pnl.cumsum()
         equity = equity.loc[pd.Timestamp(test_dates[0]):pd.Timestamp(test_dates[-1])]
         m = compute_metrics(equity)
 
         self.results = {'equity': equity, 'metrics': m, 'ic_formation': ic_formation,
-                         'ic_test': ic_test, 'tilt_strength': tilt_strength}
-        self._print_results(m, tilt_strength)
+                         'ic_test': ic_test, 'tilt_strength': tilt_label}
+        self._print_results(m, tilt_label)
         return self.results
 
     def _print_results(self, m, tilt_strength):
         print("\n" + "=" * 60)
         print("RISK-PARITY PORTFOLIO RESULTS (real data, out-of-sample)")
         print("=" * 60)
-        print(f"Tilt strength: {tilt_strength} ({'pure risk parity' if tilt_strength == 0 else 'ML-tilted'})")
+        print(f"Tilt: {tilt_strength} ({'pure risk parity' if tilt_strength in ('0.0', '0') else 'ML-tilted'})")
         print(f"Starting capital: ${self.initial_balance:,.2f}")
         print("-" * 40)
         print(f"Total return: {m['total_return']*100:+.2f}%")

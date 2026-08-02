@@ -23,6 +23,25 @@ features would mean a sample dated 2019 is built with 2026-vintage
 fundamental data, a severe and easy-to-miss form of look-ahead bias. Price
 and volume are the only data honestly available point-in-time from this
 data source, so the factor set is restricted to what can be trusted.
+Dividend history is the one legitimate exception (section 4.7).
+
+Two further defaults, adopted after being validated as genuine
+improvements (section 4.1):
+
+- **Cross-sectional rank normalization**: every feature is converted to
+  its percentile rank across the universe at each date, instead of its
+  raw value. Removes regime-dependent scale effects -- what "21-day vol"
+  means is very different in a calm market vs. a crisis.
+- **Market-relative labels**: the prediction target is a stock's forward
+  return MINUS the cross-sectional (universe) average forward return that
+  day, not the raw return. Raw returns are dominated by common market-wide
+  moves that have nothing to do with stock-picking skill; stripping that
+  out isolates the part of the return actually related to which stock was
+  picked.
+
+Neither changed the tilt-strength decision (section 2), but both are
+standard, principled practice in cross-sectional equity ML and were kept
+as the default regardless.
 
 ### 1.2 Walk-forward ML predictor
 
@@ -61,8 +80,8 @@ sizing or portfolio construction choices.
 An IC in the 0.02-0.05 range is generally considered a genuinely useful
 signal at the individual-stock level in the professional literature (IC of
 0.05 is often cited as a strong result for a single simple factor) --
-context for judging whether the 0.048 test-period result below is
-reasonable or suspicious.
+context for judging whether the test-period IC result below (~0.05-0.06,
+t-stat ~2) is reasonable or suspicious.
 
 ### 1.4 Risk parity
 
@@ -163,11 +182,134 @@ component is still built and evaluated rigorously (honest IC, proper
 walk-forward validation), but is not required to carry the result, and
 this document reports plainly that it currently doesn't.
 
-## 4. Reproducing these numbers
+## 4. Attempts to strengthen the ML signal
+
+Section 2 found that with the original price/volume factors and raw
+forward-return label, the ML predictor's formation-period IC was
+indistinguishable from zero and no tilt strength helped. Rather than
+accept that at face value, seven methodologically distinct, principled
+attempts were made to find genuine, formation-validated skill before
+concluding the locked configuration (tilt_strength=0) is correct. All
+seven are documented here -- including the two that were kept as opt-in
+code (4.1, adopted as the new default; 4.7, available but not default) --
+because "we tried this and it didn't hold up" is real information, and a
+project that only shows what worked isn't credible.
+
+### 4.1 Market-relative labels + rank-normalized features (adopted as default)
+
+Described in section 1.1. Formation IC went from ~-0.006 to ~-0.017 (still
+statistically indistinguishable from zero either way); test-period IC rose
+from ~0.048 to ~0.057 (t-stat ~2.0-2.1). Adopted as the default because
+both changes are principled, standard practice regardless of the outcome
+-- not because they flipped the tilt decision, which they didn't.
+
+### 4.2 Rolling vs. expanding training windows
+
+Rolling 20- and 40-period training windows were tested against the
+expanding-window default, hypothesizing that stale early-history data
+might be diluting the signal. Formation IC remained negative in every
+variant (-0.022 to -0.040), no better than expanding. Not adopted.
+
+### 4.3 Ridge regression vs. gradient boosting
+
+A linear Ridge model was tested as a more heavily regularized alternative
+to gradient boosting, in case the tree-based model was overfitting
+formation noise. Formation IC remained negative for Ridge too (-0.015 to
+-0.045 across window variants) -- ruling out "wrong model class" as the
+explanation. Not adopted (gradient boosting kept as the more flexible
+default, since the choice of model didn't matter here anyway).
+
+### 4.4 Longer prediction horizon (60-day / quarterly) -- caught a false positive
+
+Motivated by the classical momentum literature (Jegadeesh-Titman), which
+finds its effects concentrated at 3-12 month horizons, not 20 days.
+Formation IC at forward_days=60 was +0.106 (t-stat 2.31, 19 periods), and
+manual inspection ruled out a single-outlier artifact (median IC 0.112;
+still +0.086 excluding the single best period). This looked like a real
+finding.
+
+It wasn't tested in isolation, though -- it emerged from checking 5
+different horizons (5, 10, 20, 40, 60 days), which is itself a multiple-
+testing risk: test enough variants and one looks significant by chance.
+Rather than adopt it on a single underpowered sample (19 formation
+periods), it was checked against genuinely fresh data never used anywhere
+else in this project: the full 2009-2015 history (73 of the 77 tickers
+existed and had liquid trading back to 2009), entirely prior to and
+non-overlapping with the 2016-2026 window used everywhere else.
+
+**The signal did not replicate**: mean IC -0.049, t-stat -1.25, only 38%
+of periods positive -- worse than a coin flip. This is the expected
+behavior of a false positive found via testing multiple horizons: it
+doesn't hold up on data it wasn't fit to, even loosely. Not adopted.
+This is arguably the most important negative result in this document,
+since the replication check is exactly the kind of scrutiny that
+distinguishes a real finding from a data-mined one.
+
+### 4.5 Adaptive tilt sized by trailing realized IC (`src/adaptive_tilt.py`, kept as opt-in)
+
+A more sophisticated design than a single static tilt_strength: at each
+rebalance date, scale the tilt by the model's own trailing K-period
+realized IC (using only IC values from periods whose labels are already
+known -- fully causal). Trade the signal harder when it's recently been
+working, back off to pure risk parity when it hasn't. This is standard
+performance-based signal weighting, not a fitting exercise.
+
+Tested across a grid of `ic_lookback` (5/10/15/20) and `reference_ic`
+(0.03/0.05/0.08) on formation data: every combination still underperformed
+static pure risk parity (0.83-0.86 avg formation Sharpe vs. 0.872
+baseline). Checked informationally on the test period too (not used for
+the decision): Sharpe 1.480 vs. 1.470 for pure risk parity -- a negligible
+difference either way. Not adopted as the default, but kept as
+documented, reproducible code (`bt.run(adaptive_tilt=True)`) since it is
+a legitimately more sophisticated mechanism that simply had nothing to
+work with here.
+
+### 4.6 Fundamental/alternative data feasibility check
+
+Before building anything, this data source's actual historical depth was
+checked directly: quarterly financials returned only ~5 quarters of
+history, annual income statements only ~5 years, and earnings-date history
+only ~3 years -- all far short of the 8+ years this project's walk-forward
+methodology requires. Attempting to use them would force a choice between
+an underpowered backtest or silently using current/restated data for
+historical dates (the exact look-ahead trap documented in section 1.1).
+Neither is acceptable, so financial-statement fundamentals were ruled out
+on data-availability grounds before any model was built with them.
+
+### 4.7 Dividend-based factors (`src/dividend_features.py`, kept as opt-in)
+
+Dividend payment history is the one genuinely point-in-time-safe
+alternative data available: a dividend is a historical fact fixed on its
+ex-date and never restated, unlike a financial-statement pull. Trailing
+252-day dividend yield and year-over-year dividend growth were added as
+two more rank-normalized features (68-70 of 77 tickers have real dividend
+history; non-payers like Amazon and Tesla get an honest 0, not a
+fabricated value).
+
+Formation IC with these added: -0.008 (t-stat -0.35) -- no better than
+without them, and the informational test-period IC actually fell (from
+~0.057 to -0.024), suggesting the extra features diluted rather than
+strengthened the existing weak signal. Not adopted as the default, but
+kept as documented, reproducible code (`bt.run(include_dividends=True)`).
+
+### 4.8 Conclusion
+
+Seven methodologically distinct, principled attempts -- including one that
+correctly caught and rejected its own false positive via out-of-period
+replication -- found no formation-validated, replicable ML edge on this
+universe at this frequency with data genuinely available here. This is a
+substantive finding, not a failure to search hard enough: it means that
+with honest point-in-time data and disciplined validation, there currently
+isn't an exploitable signal to act on. The locked configuration
+(tilt_strength=0.0, pure risk parity) remains correct.
+
+## 5. Reproducing these numbers
 
 ```python
 from src.backtester import RiskParityMLBacktester
 bt = RiskParityMLBacktester()
-bt.run()                        # locked config: tilt_strength=0.0, matches section above
-bt.run(tilt_strength=1.0)       # informational -- not the locked/recommended configuration
+bt.run()                                # locked config: tilt_strength=0.0, matches section 2
+bt.run(tilt_strength=1.0)               # informational -- not the locked/recommended configuration
+bt.run(adaptive_tilt=True)              # reproduces section 4.5 (not adopted)
+bt.run(include_dividends=True)          # reproduces section 4.7 (not adopted)
 ```

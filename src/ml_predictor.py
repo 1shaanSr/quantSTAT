@@ -27,14 +27,17 @@ from sklearn.ensemble import HistGradientBoostingRegressor
 from src.features import FEATURE_COLS
 
 
-def walk_forward_predict(panel: pd.DataFrame, rebalance_dates, min_train_periods=15):
+def walk_forward_predict(panel: pd.DataFrame, rebalance_dates, min_train_periods=15, feature_cols=None):
     """
     At each date in `rebalance_dates` (must be spaced `forward_days` apart,
     matching how `panel`'s labels were built), train on all prior
     non-overlapping periods whose label is fully known, then predict the
     cross-section for that date. Returns (predictions_df, ic_df).
+    `feature_cols` defaults to FEATURE_COLS (price/volume only); pass
+    FEATURE_COLS_WITH_DIVIDENDS to include dividend factors.
     """
-    panel = panel.dropna(subset=FEATURE_COLS).copy()
+    feature_cols = feature_cols or FEATURE_COLS
+    panel = panel.dropna(subset=feature_cols).copy()
     predictions = []
     ic_records = []
 
@@ -54,8 +57,8 @@ def walk_forward_predict(panel: pd.DataFrame, rebalance_dates, min_train_periods
             max_depth=3, max_iter=50, learning_rate=0.05,
             min_samples_leaf=30, l2_regularization=1.0, random_state=42
         )
-        model.fit(train_df[FEATURE_COLS], train_df['label'])
-        preds = model.predict(predict_df[FEATURE_COLS])
+        model.fit(train_df[feature_cols], train_df['label'])
+        preds = model.predict(predict_df[feature_cols])
 
         out = predict_df[['date', 'ticker', 'label']].copy()
         out['pred'] = preds

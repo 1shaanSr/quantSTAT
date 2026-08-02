@@ -13,15 +13,21 @@ from src.risk_parity import risk_parity_weights, tilt_weights
 def run_portfolio(close: pd.DataFrame, pred_df: pd.DataFrame, rebalance_dates,
                    cov_lookback=126, tilt_strength=0.0, max_tilt_multiple=3.0,
                    cost_bps=10, capital=100_000.0, shrinkage=0.3):
+    """
+    `tilt_strength` may be a constant float, or a {date: float} schedule
+    (e.g. from src.adaptive_tilt.build_adaptive_tilt_schedule) to vary the
+    tilt over time based on the model's own trailing track record.
+    """
     returns = close.pct_change()
     dates = close.index
     pred_by_date = ({d: g.set_index('ticker')['pred'] for d, g in pred_df.groupby('date')}
                      if pred_df is not None and len(pred_df) else {})
+    tilt_schedule = tilt_strength if isinstance(tilt_strength, dict) else None
 
     daily_pnl = pd.Series(0.0, index=dates)
     current_weights = pd.Series(0.0, index=close.columns)
     weight_history = {}
-    rebal_set = set(rebalance_dates)
+    rebal_set = set(tilt_schedule.keys()) if tilt_schedule is not None else set(rebalance_dates)
 
     for i, date in enumerate(dates):
         if i > 0:
@@ -34,10 +40,11 @@ def run_portfolio(close: pd.DataFrame, pred_df: pd.DataFrame, rebalance_dates,
                 continue
             base_w = risk_parity_weights(trailing, shrinkage=shrinkage)
 
-            if tilt_strength > 0 and date in pred_by_date:
+            current_tilt = tilt_schedule[date] if tilt_schedule is not None else tilt_strength
+            if current_tilt > 0 and date in pred_by_date:
                 scores = pred_by_date[date]
                 scores = (scores - scores.mean()) / (scores.std() + 1e-9)
-                new_w = tilt_weights(base_w, scores, tilt_strength=tilt_strength, max_tilt_multiple=max_tilt_multiple)
+                new_w = tilt_weights(base_w, scores, tilt_strength=current_tilt, max_tilt_multiple=max_tilt_multiple)
             else:
                 new_w = base_w
 

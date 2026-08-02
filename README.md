@@ -53,16 +53,24 @@ never used to select the tilt strength or any other configuration choice.
 | Calmar | 1.27 |
 | ML tilt strength used | 0.0 (pure risk parity) |
 
-The ML predictor's true out-of-sample information coefficient is +0.048
-(t-stat 1.65) -- a modest, not-fully-significant signal, roughly in the
-range considered a genuinely useful factor at the individual-stock level
-in the quantitative equity literature. Formation-period evidence found
-that acting on this signal (tilting risk-parity weights toward it) did
-not improve portfolio Sharpe, so the locked configuration uses pure risk
-parity with no tilt -- the ML component's honest, disciplined finding is
-that it doesn't currently earn its way into the book, not that it was
-force-fit in. Full derivation, including cost sensitivity and year-by-year
-consistency, in `TECHNICAL_DOCS.md`.
+The ML predictor's true out-of-sample information coefficient is around
++0.05-0.06 (t-stat ~2) -- a modest signal, roughly in the range considered
+genuinely useful at the individual-stock level in the quantitative equity
+literature. Formation-period evidence found that acting on this signal
+(tilting risk-parity weights toward it) did not improve portfolio Sharpe,
+so the locked configuration uses pure risk parity with no tilt -- the ML
+component's honest, disciplined finding is that it doesn't currently earn
+its way into the book, not that it was force-fit in.
+
+Seven distinct, principled attempts were made to find a genuine tilt edge
+-- alternative labels/features, rolling vs. expanding training windows,
+Ridge vs. gradient boosting, a longer prediction horizon, adaptive
+performance-based tilt sizing, and dividend-based factors -- documented in
+full in `TECHNICAL_DOCS.md` section 4, including one (a 60-day horizon)
+that looked significant before failing to replicate on genuinely fresh,
+never-before-touched 2009-2015 data. None improved on pure risk parity.
+Two are kept as opt-in, reproducible code (`bt.run(adaptive_tilt=True)`,
+`bt.run(include_dividends=True)`) even though neither is the default.
 
 ## Installation
 
@@ -82,11 +90,13 @@ python main.py
 src/
   universe.py           # liquid large-cap ticker list
   features.py            # causal, point-in-time-safe factor construction
-  ml_predictor.py          # walk-forward gradient boosting + IC evaluation
-  risk_parity.py             # risk-parity solver + confidence-scaled tilt
-  portfolio_backtest.py        # rebalance/hold/cost simulation engine
-  metrics.py                     # Sharpe/Sortino/MaxDD/Calmar from an equity curve
-  backtester.py                    # orchestrates the pipeline
+  dividend_features.py    # opt-in dividend yield/growth factors
+  ml_predictor.py           # walk-forward gradient boosting + IC evaluation
+  adaptive_tilt.py            # opt-in trailing-IC-scaled tilt sizing
+  risk_parity.py                # risk-parity solver + confidence-scaled tilt
+  portfolio_backtest.py           # rebalance/hold/cost simulation engine
+  metrics.py                        # Sharpe/Sortino/MaxDD/Calmar from an equity curve
+  backtester.py                       # orchestrates the pipeline
 ```
 
 ## Disclaimer

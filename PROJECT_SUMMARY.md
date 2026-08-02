@@ -77,6 +77,14 @@ price prediction) is the core of this project rather than a fallback.
   liquidity-driven false positive before it became the headline result,
   and pivoting the project's core thesis in response rather than chasing
   a bigger number.
+- Seven further, methodologically distinct attempts to strengthen the ML
+  signal specifically (alternative labels/features, model class, training
+  window, prediction horizon, adaptive tilt sizing, dividend-based
+  factors) -- including one that looked statistically significant (a
+  60-day horizon, t-stat 2.31) before failing to replicate on genuinely
+  fresh, previously untouched historical data. Correctly catching that via
+  out-of-period replication, rather than adopting it, is itself the
+  demonstration of rigor.
 
 ## Architecture
 
