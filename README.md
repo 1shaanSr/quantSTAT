@@ -72,6 +72,47 @@ never-before-touched 2009-2015 data. None improved on pure risk parity.
 Two are kept as opt-in, reproducible code (`bt.run(adaptive_tilt=True)`,
 `bt.run(include_dividends=True)`) even though neither is the default.
 
+## Verification
+
+Two further checks (`src/benchmarks.py`, `src/significance.py`, run by
+default via `verify=True`) put the headline result in context rather than
+reporting it in isolation:
+
+**Benchmark comparison** on the identical test window: risk parity roughly
+ties simple naive alternatives (equal-weight 1/N, SPY buy-and-hold, 60/40
+SPY/bonds) during this specific calm bull-market period -- it does not
+clearly win here, and that's reported plainly. Two independently-documented
+historical crisis sub-periods give a fuller picture (both risk parity and
+all three benchmarks computed with the identical, continuously-managed
+convention here -- an earlier version of this comparison mixed a
+fresh-start convention for the benchmarks with a continuously-run risk
+parity curve, which inflated risk parity's apparent crisis advantage; see
+TECHNICAL_DOCS.md section 5.1 for that correction):
+
+| Period | Risk parity | Equal-weight 1/N | SPY | 60/40 |
+|---|---|---|---|---|
+| COVID crash (Feb-Apr 2020) | -7.74% | -7.66% | -9.08% | **-4.01%** |
+| 2022 rate-hike bear market | -8.50% | -8.60% | -12.28% | -12.94% |
+
+The honest picture: risk parity essentially **ties equal-weight** in both
+crises -- on the same 77-stock universe, most of the downside protection
+comes from being broadly diversified across many stocks at all, not
+specifically from the risk-parity weighting scheme. It does modestly beat
+SPY and 60/40 in the 2022 bear market (both stocks and bonds fell that
+year). But 60/40 clearly wins during COVID specifically, because real
+bonds provide a genuine cross-asset-class hedge that a pure-equity book --
+risk-parity-weighted or not -- structurally cannot replicate. This is a
+more modest, more honest finding than "risk parity dramatically protects
+you," and is consistent with the scope note in TECHNICAL_DOCS.md 1.4 about
+what within-equity risk parity does and doesn't provide.
+
+**Statistical significance**: a block bootstrap (5,000 resamples,
+preserving return autocorrelation, robust across block sizes 5-40 days)
+on the test-period Sharpe gives a 95% confidence interval of **[0.43,
+2.69]** -- comfortably excluding zero (P(Sharpe > 0) = 99.8%). The point
+estimate of 1.47 carries real uncertainty from a ~3-year sample, but the
+result is not indistinguishable from noise.
+
 ## Installation
 
 ```bash
@@ -95,8 +136,10 @@ src/
   adaptive_tilt.py            # opt-in trailing-IC-scaled tilt sizing
   risk_parity.py                # risk-parity solver + confidence-scaled tilt
   portfolio_backtest.py           # rebalance/hold/cost simulation engine
-  metrics.py                        # Sharpe/Sortino/MaxDD/Calmar from an equity curve
-  backtester.py                       # orchestrates the pipeline
+  benchmarks.py                     # equal-weight/SPY/60-40 comparison + crisis sub-periods
+  significance.py                     # block-bootstrap confidence intervals
+  metrics.py                            # Sharpe/Sortino/MaxDD/Calmar from an equity curve
+  backtester.py                           # orchestrates the pipeline
 ```
 
 ## Disclaimer

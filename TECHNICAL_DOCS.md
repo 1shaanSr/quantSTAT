@@ -303,7 +303,93 @@ with honest point-in-time data and disciplined validation, there currently
 isn't an exploitable signal to act on. The locked configuration
 (tilt_strength=0.0, pure risk parity) remains correct.
 
-## 5. Reproducing these numbers
+## 5. Verification: benchmark comparison and statistical significance
+
+Run by default (`verify=True`) after the headline result. Both checks
+apply to the LOCKED pure risk-parity strategy specifically (tilt=0),
+regardless of what tilt experiment was requested in the same `run()` call
+-- the verification section always characterizes the actual production
+configuration.
+
+### 5.1 Benchmark comparison (`src/benchmarks.py`)
+
+The headline Sharpe/Calmar mean little without context. Three naive
+alternatives are computed over the IDENTICAL test window (same dates, same
+transaction cost assumption):
+
+- **Equal-weight 1/N** across the same 77-name universe -- isolates
+  whether risk parity's smarter weighting beats naive weighting on
+  identical assets.
+- **SPY buy-and-hold** -- the classic "did you beat the market" bar.
+- **60/40 SPY/IEF** -- the traditional balanced-portfolio standard.
+
+On the test window (2023-04-26 to 2026-07-07, a fairly calm bull market
+with no severe equity crash): risk parity roughly ties or slightly trails
+all three (Sharpe ~1.47 vs. 1.46-1.62 for the alternatives). Reported
+plainly rather than hidden -- risk parity is not designed to maximize
+upside participation in a calm bull run, and this period didn't test the
+part of its value proposition that would show up.
+
+To evaluate that part directly, the same four strategies are compared over
+two independently-documented historical crisis windows (chosen for their
+historical significance -- COVID market crash, 2022 rate-hike bear market
+-- not selected after looking at any result here).
+
+**A methodology correction made before shipping this section**: an earlier
+version of this comparison computed the crisis-period benchmarks with a
+"fresh start exactly at the crisis boundary" convention, but risk parity
+with a "continuously running since 2016" convention -- an apples-to-oranges
+mix that inflated risk parity's apparent crisis advantage (the fresh-start
+benchmarks looked artificially worse because a single cold-start entry
+trade landed at an arbitrary point in the crash, not because of anything
+about the strategy itself). The "fresh start exactly at a crisis boundary"
+convention was also tested for risk parity alone and rejected on the same
+grounds: it was highly sensitive to which specific date the 20-day
+rebalance grid happened to land on relative to the crisis onset -- a
+measurement artifact, not a property of the strategy. All four strategies
+below use the same, consistent convention: continuously managed from the
+start of available history (2016), sliced at each crisis window. See
+`src/benchmarks.py` for both conventions and why each is used where it is.
+
+| Period | Risk parity | Equal-weight 1/N | SPY | 60/40 SPY/IEF |
+|---|---|---|---|---|
+| COVID crash (2020-02-14 to 2020-04-15) | -7.74% | -7.66% | -9.08% | -4.01% |
+| 2022 bear market (2022-01-03 to 2022-10-14) | -8.50% | -8.60% | -12.28% | -12.94% |
+
+The honest finding, once measured consistently: risk parity essentially
+**ties equal-weight** in both crises -- on this single 77-stock universe,
+most of the downside protection comes from being broadly diversified
+across many names at all, not specifically from the risk-parity weighting
+scheme over equal weighting. It does modestly beat SPY and 60/40 in the
+2022 bear market (both stocks and traditional bonds fell that year). But
+60/40 clearly wins during COVID specifically -- real bonds provide a
+genuine cross-asset-class hedge (a "flight to quality") that a pure-equity
+book, risk-parity-weighted or not, cannot structurally replicate. This is
+a more modest and more honest finding than "risk parity dramatically
+protects you in every crisis," and is consistent with the scope note in
+section 1.4 about what within-equity risk parity does and doesn't provide.
+
+### 5.2 Statistical significance (`src/significance.py`)
+
+A single Sharpe point estimate from a ~3-year, 41-rebalance-period sample
+has real sampling uncertainty. A moving-block bootstrap (resampling
+contiguous 20-day blocks rather than individual days, to preserve
+volatility clustering and autocorrelation that an i.i.d. bootstrap would
+destroy) generates 5,000 resampled return paths from the test-period daily
+returns and recomputes Sharpe/Calmar on each:
+
+- Sharpe: point estimate 1.47, 95% CI **[0.43, 2.69]**, P(Sharpe > 0) =
+  99.8%.
+- Calmar: point estimate 1.27, 95% CI [0.26, 4.32], P(Calmar > 0) = 99.8%.
+
+The CI is wide (reflecting real uncertainty from a modest sample) but
+excludes zero comfortably -- the result is statistically distinguishable
+from a no-skill outcome, not just a point estimate asserted without a
+sense of its own uncertainty. Checked for robustness across block sizes
+5/10/20/40 days; the CI bounds move by less than 0.2 in either direction,
+indicating the result isn't an artifact of the specific block-size choice.
+
+## 6. Reproducing these numbers
 
 ```python
 from src.backtester import RiskParityMLBacktester
@@ -312,4 +398,5 @@ bt.run()                                # locked config: tilt_strength=0.0, matc
 bt.run(tilt_strength=1.0)               # informational -- not the locked/recommended configuration
 bt.run(adaptive_tilt=True)              # reproduces section 4.5 (not adopted)
 bt.run(include_dividends=True)          # reproduces section 4.7 (not adopted)
+bt.run(verify=False)                    # skip benchmark comparison + bootstrap (faster)
 ```

@@ -17,6 +17,11 @@ from src.ml_predictor import walk_forward_predict, summarize_ic
 from src.adaptive_tilt import build_adaptive_tilt_schedule
 from src.portfolio_backtest import run_portfolio
 from src.metrics import compute_metrics, print_metrics
+from src.benchmarks import (
+    fetch_benchmark_prices, build_benchmark_curves, build_continuous_benchmark_curves,
+    crisis_period_return_dd, CRISIS_PERIODS,
+)
+from src.significance import bootstrap_sharpe_calmar, summarize_bootstrap
 
 FORWARD_DAYS = 20
 FORMATION_FRAC = 0.65
@@ -36,12 +41,16 @@ class RiskParityMLBacktester:
         volume = raw['Volume'][close.columns].reindex(close.index)
         return close, volume
 
-    def run(self, tilt_strength=None, cost_bps=10, include_dividends=False, adaptive_tilt=False):
+    def run(self, tilt_strength=None, cost_bps=10, include_dividends=False, adaptive_tilt=False, verify=True):
         """
         `include_dividends` and `adaptive_tilt` reproduce two more things
         tried in the ML-signal investigation (TECHNICAL_DOCS.md section 4)
         -- neither improved on the locked configuration, so both default
         to False. `tilt_strength` is ignored if `adaptive_tilt=True`.
+        `verify=True` (default): after the headline result, runs benchmark
+        comparison (equal-weight, SPY, 60/40) and a block-bootstrap
+        confidence interval on the LOCKED pure-risk-parity strategy over
+        its full available history -- see TECHNICAL_DOCS.md section 5.
         """
         tilt_strength = TILT_STRENGTH if tilt_strength is None else tilt_strength
 
@@ -104,7 +113,81 @@ class RiskParityMLBacktester:
         self.results = {'equity': equity, 'metrics': m, 'ic_formation': ic_formation,
                          'ic_test': ic_test, 'tilt_strength': tilt_label}
         self._print_results(m, tilt_label)
+
+        if verify:
+            self._run_verification(close, test_dates, cost_bps)
+
         return self.results
+
+    def _run_verification(self, close, test_dates, cost_bps):
+        """
+        Benchmark comparison + bootstrap significance for the LOCKED pure
+        risk-parity strategy (tilt=0), regardless of what tilt_strength/
+        adaptive_tilt/include_dividends the caller passed to run() -- this
+        section always characterizes the actual production strategy.
+
+        Two different, deliberate conventions (see src/benchmarks.py
+        module docstring for why): the test-window comparison uses a FRESH
+        start at the test boundary (matching exactly how the headline
+        result is defined), while crisis sub-periods use a CONTINUOUSLY
+        run curve sliced at the crisis window (representing an
+        already-invested, ongoingly-managed portfolio -- rejected the
+        fresh-start convention there after finding it was highly sensitive
+        to which arbitrary date the rebalance grid landed on relative to
+        the crisis onset, an artifact of measurement, not of the strategy).
+        """
+        print("\n" + "=" * 60)
+        print("VERIFICATION (see TECHNICAL_DOCS.md section 5)")
+        print("=" * 60)
+
+        test_start, test_end = pd.Timestamp(test_dates[0]), pd.Timestamp(test_dates[-1])
+        print(f"\nComputing pure risk parity fresh for the test window ({test_start.date()} to {test_end.date()})...")
+        rp_test_pnl, _ = run_portfolio(close, None, test_dates, tilt_strength=0.0,
+                                        cost_bps=cost_bps, capital=self.initial_balance)
+        rp_test_equity = (self.initial_balance + rp_test_pnl.cumsum()).loc[test_start:test_end]
+
+        print("Downloading SPY/IEF for benchmark comparison...")
+        bench_prices = fetch_benchmark_prices(close.index[0], close.index[-1])
+        bench_curves = build_benchmark_curves(close, bench_prices, test_start, test_end, cost_bps=cost_bps,
+                                               capital=self.initial_balance)
+
+        print(f"\n--- Benchmark comparison, identical test window ({test_start.date()} to {test_end.date()}) ---")
+        rp_m = compute_metrics(rp_test_equity)
+        print(f"{'Risk parity (this project)':32s} CAGR={rp_m['ann_return']*100:+7.2f}%  "
+              f"Sharpe={rp_m['sharpe_rf0']:5.2f}  Calmar={rp_m['calmar']:5.2f}  MaxDD={rp_m['max_dd']*100:7.2f}%")
+        for label, curve in bench_curves.items():
+            bm = compute_metrics(curve)
+            print(f"{label:32s} CAGR={bm['ann_return']*100:+7.2f}%  "
+                  f"Sharpe={bm['sharpe_rf0']:5.2f}  Calmar={bm['calmar']:5.2f}  MaxDD={bm['max_dd']*100:7.2f}%")
+
+        print("\n--- Crisis sub-periods: when does risk parity's defensive positioning pay off? ---")
+        print("(continuously-managed curves, sliced at each crisis window -- see docstring)")
+        all_rebal_dates = close.index[::20]
+        rp_full_pnl, _ = run_portfolio(close, None, all_rebal_dates, tilt_strength=0.0,
+                                        cost_bps=cost_bps, capital=self.initial_balance)
+        rp_full_equity = self.initial_balance + rp_full_pnl.cumsum()
+        continuous_bench = build_continuous_benchmark_curves(close, bench_prices, cost_bps=cost_bps,
+                                                              capital=self.initial_balance)
+
+        for crisis_name, (c_start, c_end) in CRISIS_PERIODS.items():
+            c_start, c_end = pd.Timestamp(c_start), pd.Timestamp(c_end)
+            print(f"\n  {crisis_name} ({c_start.date()} to {c_end.date()}):")
+
+            ret_dd = crisis_period_return_dd(rp_full_equity, c_start, c_end)
+            if ret_dd:
+                print(f"    {'Risk parity':28s} return {ret_dd[0]*100:+7.2f}%  maxDD {ret_dd[1]*100:7.2f}%")
+            for label, curve in continuous_bench.items():
+                ret_dd = crisis_period_return_dd(curve, c_start, c_end)
+                if ret_dd:
+                    print(f"    {label:28s} return {ret_dd[0]*100:+7.2f}%  maxDD {ret_dd[1]*100:7.2f}%")
+
+        print("\n--- Statistical significance: block-bootstrap 95% CI (5000 resamples, block=20 days) ---")
+        print("Is the test-period Sharpe/Calmar distinguishable from a no-skill (zero) result, "
+              "or could it plausibly be a lucky draw from this sample?")
+        sharpes, calmars = bootstrap_sharpe_calmar(rp_test_equity, block_size=20, n_resamples=5000)
+        summarize_bootstrap(sharpes, "Sharpe (rf=0%)", rp_m['sharpe_rf0'])
+        summarize_bootstrap(calmars, "Calmar", rp_m['calmar'])
+        print("=" * 60)
 
     def _print_results(self, m, tilt_strength):
         print("\n" + "=" * 60)
